@@ -4,77 +4,36 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Speech Translator</title>
-  <link rel="stylesheet" href="popup.css">
-  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      width: 200px;
+      padding: 10px;
+      font-family: 'Roboto', sans-serif;
+      text-align: center;
+    }
+    button {
+      padding: 10px 15px;
+      background-color: #4285f4;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: 500;
+      width: 100%;
+      margin-top: 10px;
+    }
+    button:hover {
+      background-color: #3367d6;
+    }
+    h1 {
+      font-size: 16px;
+      margin-bottom: 15px;
+    }
+  </style>
 </head>
 <body>
-  <div class="container">
-    <h1>Speech Translator</h1>
-    
-    <div class="language-selection">
-      <div class="select-container">
-        <label for="sourceLanguage">Source Language:</label>
-        <select id="sourceLanguage"></select>
-      </div>
-      <div class="switch-languages">
-        <button id="switchLanguages">
-          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="1" y1="10" x2="23" y2="10"></line>
-            <path d="M17 6l4 4-4 4"></path>
-            <line x1="1" y1="18" x2="15" y2="18"></line>
-            <path d="M7 22l-4-4 4-4"></path>
-          </svg>
-        </button>
-      </div>
-      <div class="select-container">
-        <label for="targetLanguage">Target Language:</label>
-        <select id="targetLanguage"></select>
-      </div>
-    </div>
-    
-    <div class="api-key-container">
-      <label for="apiKey">OpenAI API Key:</label>
-      <input type="password" id="apiKey" placeholder="Enter your OpenAI API key">
-      <button id="saveApiKey">Save</button>
-    </div>
-    
-    <div class="toggle-container">
-      <label class="switch">
-        <input type="checkbox" id="translatorToggle" checked>
-        <span class="slider round"></span>
-      </label>
-      <span class="toggle-label">Translator Active</span>
-    </div>
-    
-    <div class="translation-container">
-      <div class="input-section">
-        <div class="source-text-container">
-          <div id="sourceText" class="source-text" placeholder="Your transcribed speech will appear here..."></div>
-        </div>
-      </div>
-      
-      <div class="output-section">
-        <div class="translated-header">
-          <span>Translation</span>
-          <button id="copyButton" class="copy-button">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-              <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path>
-            </svg>
-            Copy
-          </button>
-        </div>
-        <div class="translated-text-container">
-          <div id="translatedHistory" class="translated-history"></div>
-          <div id="translatedText" class="translated-text" placeholder="Translation will appear here..."></div>
-        </div>
-      </div>
-    </div>
-    
-    <div class="status-container">
-      <p id="status"></p>
-    </div>
-  </div>
+  <h1>Speech Translator</h1>
+  <button id="openTranslator">Открыть переводчик</button>
   
   <script src="popup.js"></script>
 </body>
