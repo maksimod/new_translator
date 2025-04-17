@@ -6,9 +6,66 @@ const path = require('path');
 const fs = require('fs');
 const { Readable } = require('stream');
 const crypto = require('crypto');
+const http = require('http');
+const https = require('https');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// HTTP server
+const httpServer = http.createServer(app);
+
+// Generate self-signed certificate for HTTPS
+const generateSelfSignedCert = () => {
+  try {
+    // Check if certificates already exist
+    const keyPath = path.join(__dirname, 'server.key');
+    const certPath = path.join(__dirname, 'server.cert');
+    
+    if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
+      console.log('Using existing certificates');
+      return {
+        key: fs.readFileSync(keyPath),
+        cert: fs.readFileSync(certPath)
+      };
+    }
+    
+    // Otherwise, generate new certificates
+    const { execSync } = require('child_process');
+    
+    // Generate private key
+    execSync('openssl genrsa -out server.key 2048');
+    console.log('Generated server.key');
+    
+    // Generate self-signed certificate
+    execSync('openssl req -new -key server.key -out server.csr -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"');
+    execSync('openssl x509 -req -days 365 -in server.csr -signkey server.key -out server.cert');
+    console.log('Generated server.cert');
+    
+    // Clean up CSR file
+    if (fs.existsSync('server.csr')) {
+      fs.unlinkSync('server.csr');
+    }
+    
+    return {
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath)
+    };
+  } catch (error) {
+    console.error('Error generating certificates:', error);
+    // Return dummy values that will cause an error when used
+    return { key: 'FAILED', cert: 'FAILED' };
+  }
+};
+
+// HTTPS server with self-signed certificate
+let httpsServer;
+try {
+  const credentials = generateSelfSignedCert();
+  httpsServer = https.createServer(credentials, app);
+} catch (error) {
+  console.error('Failed to create HTTPS server:', error);
+}
 
 // Initialize OpenAI
 const openai = new OpenAI({
@@ -214,7 +271,15 @@ function cleanupTempFiles() {
 // Clean up any leftover temporary files
 cleanupTempFiles();
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Start both HTTP and HTTPS servers
+httpServer.listen(PORT, () => {
+  console.log(`HTTP Server running on port ${PORT}`);
   console.log(`API Key configured: ${process.env.OPENAI_API_KEY ? 'Yes' : 'No'}`);
-}); 
+});
+
+if (httpsServer) {
+  httpsServer.listen(3001, () => {
+    console.log(`HTTPS Server running on port 3001`);
+    console.log(`Access via https://your-ip:3001`);
+  });
+} 
