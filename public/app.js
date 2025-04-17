@@ -59,21 +59,48 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       
-      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
       
       mediaRecorder.ondataavailable = event => {
-        audioChunks.push(event.data);
+        if (event.data.size > 0) {
+          audioChunks.push(event.data);
+        }
       };
       
       mediaRecorder.onstop = async () => {
+        if (audioChunks.length === 0 || audioChunks.every(chunk => chunk.size === 0)) {
+          setStatus('No audio data recorded. Please try again.', true);
+          resetRecordingState();
+          return;
+        }
+        
         const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-        await transcribeAudio(audioBlob);
+        
+        if (audioBlob.size < 100) {
+          setStatus('Audio recording too short or empty. Please try again.', true);
+          resetRecordingState();
+          return;
+        }
+        
+        try {
+          await transcribeAudio(audioBlob);
+        } catch (error) {
+          setStatus(`Error processing audio: ${error.message}`, true);
+          resetRecordingState();
+        }
       };
       
       setStatus('Microphone access granted');
     } catch (error) {
       setStatus(`Microphone access denied: ${error.message}`, true);
+      recordButton.disabled = true;
     }
+  }
+  
+  function resetRecordingState() {
+    recordButton.classList.remove('recording');
+    recordButtonText.textContent = 'Start Recording';
+    isRecording = false;
   }
 
   // Toggle recording state
@@ -88,7 +115,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       // Start recording
       audioChunks = [];
-      mediaRecorder.start();
+      mediaRecorder.start(1000); // Collect data every second
       recordButton.classList.add('recording');
       recordButtonText.textContent = 'Stop Recording';
       isRecording = true;
@@ -105,36 +132,48 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       // Convert blob to base64
       const reader = new FileReader();
-      reader.readAsDataURL(audioBlob);
       
-      reader.onloadend = async () => {
-        const base64Audio = reader.result;
-        
-        // Send to server for transcription
-        const response = await fetch('/api/transcribe', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            audioData: base64Audio,
-            sourceLanguage: selectedSourceLanguage
-          })
-        });
-        
-        if (!response.ok) {
-          throw new Error(`Transcription failed: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        
-        // Display transcribed text
-        sourceTextDiv.textContent = data.text;
-        
-        // Translate the transcribed text
-        await translateText(data.text);
-      };
+      const base64Promise = new Promise((resolve, reject) => {
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = reject;
+      });
+      
+      reader.readAsDataURL(audioBlob);
+      const base64Audio = await base64Promise;
+      
+      setStatus('Sending audio for transcription...');
+      
+      // Send to server for transcription
+      const response = await fetch('/api/transcribe', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          audioData: base64Audio,
+          sourceLanguage: selectedSourceLanguage
+        })
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || `Transcription failed: ${response.status}`);
+      }
+      
+      if (!data.text || data.text.trim() === '') {
+        setStatus('No speech detected. Please try again.', true);
+        return;
+      }
+      
+      // Display transcribed text
+      sourceTextDiv.textContent = data.text;
+      setStatus('Transcription complete, translating...');
+      
+      // Translate the transcribed text
+      await translateText(data.text);
     } catch (error) {
+      console.error('Transcription error:', error);
       setStatus(`Transcription error: ${error.message}`, true);
     }
   }
@@ -156,17 +195,18 @@ document.addEventListener('DOMContentLoaded', () => {
         })
       });
       
-      if (!response.ok) {
-        throw new Error(`Translation failed: ${response.status}`);
-      }
-      
       const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || `Translation failed: ${response.status}`);
+      }
       
       // Display translated text
       translatedTextDiv.textContent = data.translation;
       
       setStatus('Translation complete');
     } catch (error) {
+      console.error('Translation error:', error);
       setStatus(`Translation error: ${error.message}`, true);
     }
   }
@@ -175,6 +215,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function setStatus(message, isError = false) {
     statusElement.textContent = message;
     statusElement.style.color = isError ? '#ea4335' : '#666';
+    console.log(`Status: ${message} ${isError ? '(ERROR)' : ''}`);
   }
 
   // Event listeners
@@ -203,7 +244,7 @@ document.addEventListener('DOMContentLoaded', () => {
   
   recordButton.addEventListener('click', () => {
     if (!mediaRecorder) {
-      setStatus('Microphone not initialized. Please refresh the page.', true);
+      setStatus('Microphone not initialized. Please refresh the page and allow microphone access.', true);
       return;
     }
     

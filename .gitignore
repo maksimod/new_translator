@@ -20,4 +20,6 @@ yarn-error.log*
 Thumbs.db
 
 # temp files
-temp_audio.webm 
+temp_audio.webm
+/temp/
+temp/ 
