@@ -3,19 +3,44 @@ document.addEventListener('DOMContentLoaded', () => {
   const sourceLanguageSelect = document.getElementById('sourceLanguage');
   const targetLanguageSelect = document.getElementById('targetLanguage');
   const switchLanguagesBtn = document.getElementById('switchLanguages');
-  const recordButton = document.getElementById('recordButton');
-  const recordButtonText = document.getElementById('recordButtonText');
+  const translatorToggle = document.getElementById('translatorToggle');
+  const toggleLabel = document.querySelector('.toggle-label');
   const sourceTextDiv = document.getElementById('sourceText');
   const translatedTextDiv = document.getElementById('translatedText');
   const statusElement = document.getElementById('status');
 
   // State variables
   let languages = [];
-  let mediaRecorder;
-  let audioChunks = [];
+  let isTranslatorActive = true;
+  let recognition = null;
   let isRecording = false;
   let selectedSourceLanguage = 'ru'; // Default to Russian
   let selectedTargetLanguage = 'en'; // Default to English
+  let silenceTimer = null;
+  let lastTranscriptTime = Date.now();
+  
+  // Language code mapping for Web Speech API
+  const languageCodeMapping = {
+    'en': 'en-US',
+    'es': 'es-ES',
+    'fr': 'fr-FR',
+    'de': 'de-DE',
+    'it': 'it-IT',
+    'pt': 'pt-PT',
+    'ru': 'ru-RU',
+    'zh': 'zh-CN',
+    'ja': 'ja-JP',
+    'ko': 'ko-KR',
+    'ar': 'ar-SA',
+    'hi': 'hi-IN'
+  };
+
+  // Check browser support for Web Speech API
+  if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+    setStatus('Your browser does not support speech recognition. Please use Chrome or Edge.', true);
+    translatorToggle.disabled = true;
+    return;
+  }
 
   // Fetch languages from the API
   async function fetchLanguages() {
@@ -54,132 +79,149 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Initialize media recorder
-  async function setupMediaRecorder() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      
-      mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-      
-      mediaRecorder.ondataavailable = event => {
-        if (event.data.size > 0) {
-          audioChunks.push(event.data);
+  // Initialize speech recognition
+  function setupSpeechRecognition() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    recognition = new SpeechRecognition();
+    
+    // Set recognition properties
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+    
+    // Set the language based on the selected source language
+    updateRecognitionLanguage();
+    
+    // Recognition events
+    recognition.onstart = () => {
+      isRecording = true;
+      setStatus('Listening...');
+    };
+    
+    recognition.onend = () => {
+      isRecording = false;
+      if (isTranslatorActive) {
+        // Restart recognition after a short delay
+        setTimeout(() => {
+          if (isTranslatorActive) {
+            startRecognition();
+          }
+        }, 500);
+      }
+    };
+    
+    recognition.onerror = (event) => {
+      console.error('Recognition error:', event.error);
+      if (event.error === 'not-allowed') {
+        setStatus('Microphone access denied. Please allow microphone access.', true);
+        isTranslatorActive = false;
+        translatorToggle.checked = false;
+        updateToggleLabel();
+      } else {
+        setStatus(`Recognition error: ${event.error}`, true);
+        // Restart after error if still active
+        if (isTranslatorActive && !isRecording) {
+          setTimeout(startRecognition, 1000);
         }
-      };
+      }
+    };
+    
+    recognition.onnomatch = () => {
+      console.log('No speech detected');
+    };
+    
+    recognition.onresult = (event) => {
+      let transcript = '';
+      let isFinal = false;
       
-      mediaRecorder.onstop = async () => {
-        if (audioChunks.length === 0 || audioChunks.every(chunk => chunk.size === 0)) {
-          setStatus('No audio data recorded. Please try again.', true);
-          resetRecordingState();
-          return;
-        }
-        
-        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-        
-        if (audioBlob.size < 100) {
-          setStatus('Audio recording too short or empty. Please try again.', true);
-          resetRecordingState();
-          return;
-        }
-        
-        try {
-          await transcribeAudio(audioBlob);
-        } catch (error) {
-          setStatus(`Error processing audio: ${error.message}`, true);
-          resetRecordingState();
-        }
-      };
+      // Get the transcript from the results
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        transcript = event.results[i][0].transcript;
+        isFinal = event.results[i].isFinal;
+      }
       
-      setStatus('Microphone access granted');
-    } catch (error) {
-      setStatus(`Microphone access denied: ${error.message}`, true);
-      recordButton.disabled = true;
+      if (transcript.trim() !== '') {
+        // Check if the detected language matches the selected source language
+        checkLanguageAndProcess(transcript, isFinal);
+      }
+    };
+    
+    // Start recognition
+    if (isTranslatorActive) {
+      startRecognition();
     }
   }
   
-  function resetRecordingState() {
-    recordButton.classList.remove('recording');
-    recordButtonText.textContent = 'Start Recording';
-    isRecording = false;
-  }
-
-  // Toggle recording state
-  function toggleRecording() {
-    if (isRecording) {
-      // Stop recording
-      mediaRecorder.stop();
-      recordButton.classList.remove('recording');
-      recordButtonText.textContent = 'Start Recording';
-      isRecording = false;
-      setStatus('Processing speech...');
-    } else {
-      // Start recording
-      audioChunks = [];
-      mediaRecorder.start(1000); // Collect data every second
-      recordButton.classList.add('recording');
-      recordButtonText.textContent = 'Stop Recording';
-      isRecording = true;
-      setStatus('Recording... Speak now');
-      
-      // Clear previous texts
-      sourceTextDiv.textContent = '';
-      translatedTextDiv.textContent = '';
+  function startRecognition() {
+    if (!isRecording && isTranslatorActive) {
+      try {
+        recognition.start();
+      } catch (error) {
+        console.error('Recognition start error:', error);
+        // If already started, do nothing
+      }
     }
   }
-
-  // Transcribe audio using OpenAI API
-  async function transcribeAudio(audioBlob) {
+  
+  function stopRecognition() {
+    if (isRecording) {
+      recognition.stop();
+    }
+  }
+  
+  function updateRecognitionLanguage() {
+    if (recognition) {
+      const browserLanguageCode = languageCodeMapping[selectedSourceLanguage] || selectedSourceLanguage;
+      recognition.lang = browserLanguageCode;
+      console.log(`Recognition language set to: ${browserLanguageCode}`);
+    }
+  }
+  
+  // Check if the detected language matches the selected source language
+  // For now, we'll use a simple approach by sending the first few words to the server for processing
+  async function checkLanguageAndProcess(transcript, isFinal) {
+    lastTranscriptTime = Date.now();
+    
+    // Clear any existing timers
+    if (silenceTimer) {
+      clearTimeout(silenceTimer);
+    }
+    
+    // Display transcript in source text area
+    sourceTextDiv.textContent = transcript;
+    
+    // If final result and translator is active, process for translation
+    if (isFinal && isTranslatorActive) {
+      // Send to backend for transcription with language validation
+      await processAudioTranscript(transcript);
+    } else if (!isFinal) {
+      // Set a timer to process after a period of silence
+      silenceTimer = setTimeout(async () => {
+        if (Date.now() - lastTranscriptTime >= 1500) {
+          // No new transcription for 1.5 seconds, treat as complete
+          await processAudioTranscript(transcript);
+        }
+      }, 1500);
+    }
+  }
+  
+  // Process transcript and send for translation if language matches
+  async function processAudioTranscript(transcript) {
+    if (!transcript || transcript.trim() === '') return;
+    
     try {
-      // Convert blob to base64
-      const reader = new FileReader();
-      
-      const base64Promise = new Promise((resolve, reject) => {
-        reader.onloadend = () => resolve(reader.result);
-        reader.onerror = reject;
-      });
-      
-      reader.readAsDataURL(audioBlob);
-      const base64Audio = await base64Promise;
-      
-      setStatus('Sending audio for transcription...');
-      
-      // Send to server for transcription
-      const response = await fetch('/api/transcribe', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          audioData: base64Audio,
-          sourceLanguage: selectedSourceLanguage
-        })
-      });
-      
-      const data = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(data.error || `Transcription failed: ${response.status}`);
-      }
-      
-      if (!data.text || data.text.trim() === '') {
-        setStatus('No speech detected. Please try again.', true);
-        return;
-      }
-      
-      // Display transcribed text
-      sourceTextDiv.textContent = data.text;
-      setStatus('Transcription complete, translating...');
-      
-      // Translate the transcribed text
-      await translateText(data.text);
+      // Send the transcript for translation
+      await translateText(transcript);
     } catch (error) {
-      console.error('Transcription error:', error);
-      setStatus(`Transcription error: ${error.message}`, true);
+      console.error('Error processing transcript:', error);
+      setStatus(`Error: ${error.message}`, true);
     }
   }
 
   // Translate text using OpenAI API
   async function translateText(text) {
+    if (!isTranslatorActive) return;
+    
     try {
       setStatus('Translating...');
       
@@ -217,14 +259,27 @@ document.addEventListener('DOMContentLoaded', () => {
     statusElement.style.color = isError ? '#ea4335' : '#666';
     console.log(`Status: ${message} ${isError ? '(ERROR)' : ''}`);
   }
+  
+  // Update toggle label based on state
+  function updateToggleLabel() {
+    toggleLabel.textContent = isTranslatorActive ? 'Translator Active' : 'Translator Inactive';
+  }
 
   // Event listeners
   sourceLanguageSelect.addEventListener('change', () => {
     selectedSourceLanguage = sourceLanguageSelect.value;
+    updateRecognitionLanguage();
+    
+    // Clear texts when language changes
+    sourceTextDiv.textContent = '';
+    translatedTextDiv.textContent = '';
   });
   
   targetLanguageSelect.addEventListener('change', () => {
     selectedTargetLanguage = targetLanguageSelect.value;
+    
+    // Clear translated text when target language changes
+    translatedTextDiv.textContent = '';
   });
   
   switchLanguagesBtn.addEventListener('click', () => {
@@ -237,21 +292,28 @@ document.addEventListener('DOMContentLoaded', () => {
     sourceLanguageSelect.value = selectedSourceLanguage;
     targetLanguageSelect.value = selectedTargetLanguage;
     
+    // Update recognition language
+    updateRecognitionLanguage();
+    
     // Clear text displays
     sourceTextDiv.textContent = '';
     translatedTextDiv.textContent = '';
   });
   
-  recordButton.addEventListener('click', () => {
-    if (!mediaRecorder) {
-      setStatus('Microphone not initialized. Please refresh the page and allow microphone access.', true);
-      return;
-    }
+  translatorToggle.addEventListener('change', () => {
+    isTranslatorActive = translatorToggle.checked;
+    updateToggleLabel();
     
-    toggleRecording();
+    if (isTranslatorActive) {
+      setStatus('Translator activated. Listening...');
+      startRecognition();
+    } else {
+      setStatus('Translator deactivated.');
+      stopRecognition();
+    }
   });
   
   // Initialize the application
   fetchLanguages();
-  setupMediaRecorder();
+  setupSpeechRecognition();
 }); 
