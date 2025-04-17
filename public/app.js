@@ -7,6 +7,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const toggleLabel = document.querySelector('.toggle-label');
   const sourceTextDiv = document.getElementById('sourceText');
   const translatedTextDiv = document.getElementById('translatedText');
+  const translatedHistoryDiv = document.getElementById('translatedHistory');
+  const copyButton = document.getElementById('copyButton');
   const statusElement = document.getElementById('status');
 
   // State variables
@@ -26,6 +28,9 @@ document.addEventListener('DOMContentLoaded', () => {
   let lastTranslationTime = 0;
   let isTranslationInProgress = false;
   let partialTranslationCache = {};
+  let translationHistory = [];
+  let isFinalizing = false;
+  let finalizationTimer = null;
   
   // Language code mapping for Web Speech API
   const languageCodeMapping = {
@@ -210,8 +215,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (isFinal) {
           currentTranscript = transcript; // Store final result
           console.debug('Final transcript:', transcript);
+          
+          // Start a finalization timer to detect end of speech
+          if (!isFinalizing) {
+            startFinalizationTimer();
+          }
         } else {
           console.debug('Interim transcript:', transcript);
+          // Reset finalization if we're still getting interim results
+          if (isFinalizing) {
+            resetFinalizationTimer();
+          }
         }
       }
       
@@ -262,6 +276,71 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Begin with warm-up
     startWarmUp();
+  }
+  
+  // Start a timer to detect end of speech/phrase
+  function startFinalizationTimer() {
+    isFinalizing = true;
+    console.debug('Starting finalization timer');
+    
+    if (finalizationTimer) {
+      clearTimeout(finalizationTimer);
+    }
+    
+    finalizationTimer = setTimeout(() => {
+      console.debug('Finalization timer completed, finalizing current phrase');
+      finalizeCurrentPhrase();
+    }, 2000); // Wait 2 seconds of silence to finalize
+  }
+  
+  // Reset finalization timer if speech continues
+  function resetFinalizationTimer() {
+    isFinalizing = false;
+    console.debug('Resetting finalization timer');
+    
+    if (finalizationTimer) {
+      clearTimeout(finalizationTimer);
+      finalizationTimer = null;
+    }
+  }
+  
+  // Finalize the current phrase and prepare for a new one
+  function finalizeCurrentPhrase() {
+    if (translatedTextDiv.textContent.trim() !== '') {
+      console.debug('Finalizing phrase:', translatedTextDiv.textContent);
+      
+      // Add current translation to history
+      addTranslationToHistory(translatedTextDiv.textContent);
+      
+      // Clear current translation area for new phrase
+      translatedTextDiv.textContent = '';
+      sourceTextDiv.textContent = '';
+      
+      // Reset processed transcript
+      lastProcessedTranscript = '';
+      
+      // Reset finalization state
+      isFinalizing = false;
+      finalizationTimer = null;
+    }
+  }
+  
+  // Add translation to history
+  function addTranslationToHistory(translation) {
+    // Add to array for copy functionality
+    translationHistory.push(translation);
+    
+    // Create history item element
+    const historyItem = document.createElement('div');
+    historyItem.className = 'history-item';
+    historyItem.textContent = translation;
+    
+    // Add to DOM
+    translatedHistoryDiv.appendChild(historyItem);
+    
+    // Scroll to the bottom to show latest translation
+    const container = translatedHistoryDiv.parentElement;
+    container.scrollTop = container.scrollHeight;
   }
   
   function startRecognition() {
@@ -460,6 +539,51 @@ document.addEventListener('DOMContentLoaded', () => {
   function updateToggleLabel() {
     toggleLabel.textContent = isTranslatorActive ? 'Translator Active' : 'Translator Inactive';
   }
+  
+  // Copy all translations to clipboard
+  function copyTranslations() {
+    // Get all translations including current one if it exists
+    let allTranslations = [...translationHistory];
+    
+    // Add current translation if not empty
+    if (translatedTextDiv.textContent.trim() !== '') {
+      allTranslations.push(translatedTextDiv.textContent);
+    }
+    
+    // Join with newlines
+    const textToCopy = allTranslations.join('\n\n');
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(textToCopy)
+      .then(() => {
+        console.debug('Text copied to clipboard');
+        showCopiedNotification();
+      })
+      .catch(err => {
+        console.error('Failed to copy: ', err);
+        setStatus('Failed to copy translations to clipboard', true);
+      });
+  }
+  
+  // Show a notification that text was copied
+  function showCopiedNotification() {
+    // Create notification if it doesn't exist
+    let notification = document.querySelector('.copied-notification');
+    if (!notification) {
+      notification = document.createElement('div');
+      notification.className = 'copied-notification';
+      notification.textContent = 'Copied to clipboard!';
+      document.body.appendChild(notification);
+    }
+    
+    // Show the notification
+    notification.classList.add('show');
+    
+    // Hide after 2 seconds
+    setTimeout(() => {
+      notification.classList.remove('show');
+    }, 2000);
+  }
 
   // Event listeners
   sourceLanguageSelect.addEventListener('change', () => {
@@ -526,6 +650,8 @@ document.addEventListener('DOMContentLoaded', () => {
       stopRecognition();
     }
   });
+  
+  copyButton.addEventListener('click', copyTranslations);
   
   // Initialize the application
   fetchLanguages();

@@ -160,6 +160,13 @@ input:checked + .slider:before {
   min-height: 150px;
 }
 
+.translated-text-container {
+  display: flex;
+  flex-direction: column;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
 .source-text, .translated-text {
   width: 100%;
   min-height: 120px;
@@ -177,54 +184,80 @@ input:checked + .slider:before {
   font-style: italic;
 }
 
-.record-button-container {
+.translated-header {
   display: flex;
-  justify-content: center;
-  padding: 1rem;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.8rem 1.5rem;
   background-color: #f8f9fa;
-  border-top: 1px solid #eee;
+  border-bottom: 1px solid #eee;
 }
 
-.record-button {
+.translated-header span {
+  font-weight: 500;
+  color: #444;
+}
+
+.copy-button {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 10px 20px;
-  background-color: #4285f4;
-  color: white;
-  border: none;
-  border-radius: 25px;
+  gap: 5px;
+  background-color: #f8f9fa;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 0.9rem;
   cursor: pointer;
-  font-size: 1rem;
-  font-weight: 500;
-  transition: background-color 0.3s;
+  transition: all 0.2s;
 }
 
-.record-button:hover {
-  background-color: #3367d6;
+.copy-button:hover {
+  background-color: #e9ecef;
 }
 
-.record-button.recording {
-  background-color: #ea4335;
-  animation: pulse 1.5s infinite;
+.copy-button svg {
+  color: #666;
 }
 
-.record-icon {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background-color: white;
+.translated-history {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-bottom: 1rem;
 }
 
-.record-button.recording .record-icon {
-  animation: pulse 1.5s infinite;
+.history-item {
+  padding: 0.8rem;
+  background-color: #f8f9fa;
+  border-radius: 8px;
+  border-left: 3px solid #4285f4;
+  font-size: 1.1rem;
+  line-height: 1.5;
 }
 
 .status-container {
   text-align: center;
   color: #666;
   font-style: italic;
+}
+
+.copied-notification {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background-color: #4285f4;
+  color: white;
+  padding: 10px 20px;
+  border-radius: 4px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+  opacity: 0;
+  transform: translateY(10px);
+  transition: all 0.3s;
+}
+
+.copied-notification.show {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 @keyframes pulse {
