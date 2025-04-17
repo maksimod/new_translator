@@ -1,69 +1,78 @@
-# Speech Translator Web Application
+# Speech Translator Browser Extension
 
-A real-time speech translation web application that uses OpenAI API for transcription and translation between 12 popular languages.
+Расширение для браузера, которое позволяет в реальном времени переводить вашу речь с одного языка на другой. Используя Web Speech API для распознавания речи и API OpenAI для перевода.
 
-## Features
+## Возможности
 
-- Voice recording and transcription using OpenAI's Whisper model
-- Text translation using GPT-3.5-turbo
-- Support for 12 languages: English, Spanish, French, German, Italian, Portuguese, Russian, Chinese, Japanese, Korean, Arabic, and Hindi
-- Intuitive user interface with language switching capability
-- Real-time status updates
+- Распознавание речи в реальном времени
+- Перевод на 12 различных языков
+- Поддержка всех браузеров на базе Chromium (Chrome, Edge, Opera, Brave)
+- Сохранение истории переводов
+- Возможность копирования переводов в буфер обмена
 
-## Prerequisites
+## Установка расширения
 
-- Node.js (v14 or higher)
-- npm (v6 or higher)
-- An OpenAI API key
+### Установка через Chrome Web Store (рекомендуется)
 
-## Installation
+(После публикации в Chrome Web Store вы сможете установить расширение оттуда)
 
-1. Clone the repository:
-```
-git clone <repository-url>
-cd speech-translator
-```
+### Ручная установка (режим разработчика)
 
-2. Install dependencies:
-```
-npm install
-```
+1. Скачайте и распакуйте архив с расширением
+2. Откройте страницу управления расширениями в вашем браузере:
+   - Chrome: chrome://extensions/
+   - Edge: edge://extensions/
+   - Opera: opera://extensions/
+   - Brave: brave://extensions/
+3. Включите "Режим разработчика" (переключатель в правом верхнем углу)
+4. Нажмите кнопку "Загрузить распакованное расширение"
+5. Выберите папку с распакованным расширением
 
-3. Create a `.env` file in the root directory and add your OpenAI API key:
-```
-OPENAI_API_KEY=your_openai_api_key
-```
+## Использование
 
-4. Start the server:
-```
-npm start
-```
+1. После установки нажмите на иконку расширения в панели браузера
+2. Введите ваш API ключ OpenAI и нажмите "Сохранить"
+3. Выберите исходный язык (язык, на котором вы говорите)
+4. Выберите целевой язык (язык, на который нужно перевести)
+5. Говорите, и ваша речь будет автоматически переведена
+6. Используйте кнопку "Copy" для копирования перевода в буфер обмена
 
-5. Open your browser and navigate to `http://localhost:3000`
+## Получение API ключа OpenAI
 
-## Usage
+Для работы расширения требуется API ключ OpenAI. Чтобы получить ключ:
 
-1. Select the source language (the language you will speak in)
-2. Select the target language (the language you want the translation in)
-3. Click the "Start Recording" button and begin speaking
-4. Click "Stop Recording" when you are done
-5. Wait for the transcription and translation to complete
-6. View your original text and its translation
+1. Зарегистрируйтесь на сайте [OpenAI](https://platform.openai.com/)
+2. Перейдите в раздел API Keys
+3. Создайте новый API ключ
+4. Скопируйте ключ и вставьте его в настройки расширения
 
-## Technical Details
+## Поддерживаемые языки
 
-- The application uses Express.js for the backend server
-- OpenAI's Whisper model for speech-to-text transcription
-- OpenAI's GPT-3.5-turbo for text translation
-- Frontend is built with vanilla JavaScript, HTML, and CSS
-- Audio is recorded using the MediaRecorder Web API
+- Английский
+- Испанский
+- Французский
+- Немецкий
+- Итальянский
+- Португальский
+- Русский
+- Китайский
+- Японский
+- Корейский
+- Арабский
+- Хинди
 
-## Troubleshooting
+## Конфиденциальность
 
-- **Microphone access denied**: Make sure to grant microphone permissions to the web application
-- **Transcription errors**: Ensure you're speaking clearly and in a quiet environment
-- **API errors**: Check that your OpenAI API key is valid and has sufficient credits
+- Ваш API ключ OpenAI хранится только в локальном хранилище вашего браузера
+- Аудиоданные обрабатываются локально с помощью Web Speech API
+- Для перевода текст отправляется в API OpenAI
 
-## License
+## Устранение неполадок
 
-MIT 
+- **Микрофон не работает**: Убедитесь, что вы разрешили доступ к микрофону для данного сайта
+- **Перевод не работает**: Проверьте правильность API ключа OpenAI
+- **Неправильное распознавание**: Попробуйте говорить более четко и медленно
+
+## Лицензия
+
+Это расширение распространяется под лицензией MIT. 
