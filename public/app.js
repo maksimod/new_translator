@@ -18,6 +18,14 @@ document.addEventListener('DOMContentLoaded', () => {
   let selectedTargetLanguage = 'en'; // Default to English
   let silenceTimer = null;
   let lastTranscriptTime = Date.now();
+  let isFirstRecognition = true;
+  let ignoreNextNetworkError = true;
+  let hasStartedRealRecognition = false;
+  let currentTranscript = '';
+  let lastProcessedTranscript = '';
+  let lastTranslationTime = 0;
+  let isTranslationInProgress = false;
+  let partialTranslationCache = {};
   
   // Language code mapping for Web Speech API
   const languageCodeMapping = {
@@ -82,46 +90,106 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initialize speech recognition
   function setupSpeechRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    
+    // Initialize two separate recognition instances
+    // One for warming up and one for actual usage
+    const warmupRecognition = new SpeechRecognition();
     recognition = new SpeechRecognition();
     
-    // Set recognition properties
+    // Set recognition properties for both instances
+    warmupRecognition.continuous = false;
+    warmupRecognition.interimResults = false;
+    
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.maxAlternatives = 1;
     
     // Set the language based on the selected source language
-    updateRecognitionLanguage();
+    const browserLanguageCode = languageCodeMapping[selectedSourceLanguage] || selectedSourceLanguage;
+    warmupRecognition.lang = browserLanguageCode;
+    recognition.lang = browserLanguageCode;
+    console.log(`Recognition language set to: ${browserLanguageCode}`);
     
-    // Recognition events
+    // Warm-up recognition events
+    warmupRecognition.onstart = () => {
+      console.log('Warm-up recognition started');
+    };
+    
+    warmupRecognition.onend = () => {
+      console.log('Warm-up recognition ended');
+      // Start real recognition after warm-up
+      setTimeout(() => {
+        if (isTranslatorActive && !hasStartedRealRecognition) {
+          hasStartedRealRecognition = true;
+          startRealRecognition();
+        }
+      }, 100);
+    };
+    
+    warmupRecognition.onerror = (event) => {
+      console.log('Warm-up error:', event.error);
+      // Start real recognition anyway
+      if (!hasStartedRealRecognition) {
+        hasStartedRealRecognition = true;
+        startRealRecognition();
+      }
+    };
+    
+    // Real recognition events
     recognition.onstart = () => {
       isRecording = true;
       setStatus('Listening...');
+      console.debug('Recognition started, ready to capture speech');
     };
     
     recognition.onend = () => {
       isRecording = false;
+      console.debug('Recognition ended');
+      
+      // If we have current transcript but got disconnected, try to process it
+      if (currentTranscript && currentTranscript.trim() !== '') {
+        console.debug('Processing final transcript after disconnection:', currentTranscript);
+        processAudioTranscript(currentTranscript, true);
+        currentTranscript = '';
+      }
+      
       if (isTranslatorActive) {
         // Restart recognition after a short delay
         setTimeout(() => {
           if (isTranslatorActive) {
-            startRecognition();
+            startRealRecognition();
           }
-        }, 500);
+        }, 300);
       }
     };
     
     recognition.onerror = (event) => {
       console.error('Recognition error:', event.error);
+      
       if (event.error === 'not-allowed') {
         setStatus('Microphone access denied. Please allow microphone access.', true);
         isTranslatorActive = false;
         translatorToggle.checked = false;
         updateToggleLabel();
+      } else if (event.error === 'network') {
+        // Ignore the first network error as it's expected
+        if (ignoreNextNetworkError) {
+          console.log('Ignoring first network error (expected during initialization)');
+          ignoreNextNetworkError = false;
+        } else {
+          // Don't show network errors to avoid alarming users
+          console.log('Network error occurred, restarting recognition');
+        }
+        
+        // Always restart immediately after network error
+        if (isTranslatorActive && !isRecording) {
+          setTimeout(startRealRecognition, 300);
+        }
       } else {
         setStatus(`Recognition error: ${event.error}`, true);
         // Restart after error if still active
         if (isTranslatorActive && !isRecording) {
-          setTimeout(startRecognition, 1000);
+          setTimeout(startRealRecognition, 500);
         }
       }
     };
@@ -138,6 +206,13 @@ document.addEventListener('DOMContentLoaded', () => {
       for (let i = event.resultIndex; i < event.results.length; i++) {
         transcript = event.results[i][0].transcript;
         isFinal = event.results[i].isFinal;
+        
+        if (isFinal) {
+          currentTranscript = transcript; // Store final result
+          console.debug('Final transcript:', transcript);
+        } else {
+          console.debug('Interim transcript:', transcript);
+        }
       }
       
       if (transcript.trim() !== '') {
@@ -146,26 +221,66 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     };
     
-    // Start recognition
-    if (isTranslatorActive) {
-      startRecognition();
+    // Start warm-up recognition
+    function startWarmUp() {
+      try {
+        console.log('Starting warm-up recognition...');
+        warmupRecognition.start();
+      } catch (error) {
+        console.error('Warm-up start error:', error);
+        // Start real recognition if warm-up fails
+        if (!hasStartedRealRecognition) {
+          hasStartedRealRecognition = true;
+          startRealRecognition();
+        }
+      }
     }
+    
+    // Start the real recognition
+    function startRealRecognition() {
+      if (!isRecording && isTranslatorActive) {
+        try {
+          recognition.start();
+        } catch (error) {
+          console.error('Recognition start error:', error);
+          // If already started, retry after a short delay
+          setTimeout(() => {
+            if (!isRecording && isTranslatorActive) {
+              try {
+                recognition.start();
+              } catch (innerError) {
+                console.error('Second attempt failed:', innerError);
+              }
+            }
+          }, 300);
+        }
+      }
+    }
+    
+    // Store the function in the outer scope for access from other functions
+    this.startRealRecognition = startRealRecognition;
+    
+    // Begin with warm-up
+    startWarmUp();
   }
   
   function startRecognition() {
-    if (!isRecording && isTranslatorActive) {
-      try {
-        recognition.start();
-      } catch (error) {
-        console.error('Recognition start error:', error);
-        // If already started, do nothing
-      }
+    if (hasStartedRealRecognition) {
+      startRealRecognition();
+    } else {
+      // If real recognition hasn't started yet (still in warm-up),
+      // just set the flag and it will start automatically after warm-up
+      isTranslatorActive = true;
     }
   }
   
   function stopRecognition() {
     if (isRecording) {
-      recognition.stop();
+      try {
+        recognition.stop();
+      } catch (error) {
+        console.error('Error stopping recognition:', error);
+      }
     }
   }
   
@@ -174,11 +289,59 @@ document.addEventListener('DOMContentLoaded', () => {
       const browserLanguageCode = languageCodeMapping[selectedSourceLanguage] || selectedSourceLanguage;
       recognition.lang = browserLanguageCode;
       console.log(`Recognition language set to: ${browserLanguageCode}`);
+      
+      // Reset translation cache when language changes
+      partialTranslationCache = {};
     }
   }
   
+  // Check if we need to process the transcript based on changes
+  function shouldProcessTranscript(transcript) {
+    const now = Date.now();
+    const timeSinceLastTranslation = now - lastTranslationTime;
+    
+    // Count words in current and last processed transcript
+    const currentWords = transcript.trim().split(/\s+/);
+    const lastWords = lastProcessedTranscript.trim().split(/\s+/);
+    
+    // How many new words (rough estimation)
+    let wordDifference = currentWords.length - lastWords.length;
+    
+    // Log details for debugging
+    console.debug('Transcript analysis:', {
+      current: transcript,
+      last: lastProcessedTranscript,
+      currentWordCount: currentWords.length,
+      lastWordCount: lastWords.length,
+      wordDifference: wordDifference,
+      timeSinceLastTranslation: timeSinceLastTranslation,
+      isTranslationInProgress: isTranslationInProgress
+    });
+    
+    // Process if:
+    // 1. It's a new phrase (first few words)
+    // 2. At least 3 new words detected
+    // 3. Time since last translation > 1000ms
+    // 4. No translation is currently in progress
+    
+    if (lastProcessedTranscript === '' || 
+        wordDifference >= 3 || 
+        timeSinceLastTranslation > 1000) {
+      
+      if (!isTranslationInProgress) {
+        console.debug('Should process transcript: YES - criteria met');
+        return true;
+      } else {
+        console.debug('Should process transcript: NO - translation in progress');
+        return false;
+      }
+    }
+    
+    console.debug('Should process transcript: NO - criteria not met');
+    return false;
+  }
+  
   // Check if the detected language matches the selected source language
-  // For now, we'll use a simple approach by sending the first few words to the server for processing
   async function checkLanguageAndProcess(transcript, isFinal) {
     lastTranscriptTime = Date.now();
     
@@ -190,40 +353,64 @@ document.addEventListener('DOMContentLoaded', () => {
     // Display transcript in source text area
     sourceTextDiv.textContent = transcript;
     
-    // If final result and translator is active, process for translation
+    // If final result or significant changes, and translator is active, process for translation
     if (isFinal && isTranslatorActive) {
-      // Send to backend for transcription with language validation
-      await processAudioTranscript(transcript);
+      // Process immediately for better responsiveness
+      console.debug('Processing FINAL transcript immediately');
+      await processAudioTranscript(transcript, true);
+    } else if (!isFinal && shouldProcessTranscript(transcript)) {
+      // Process partial transcript if there are significant changes
+      console.debug('Processing PARTIAL transcript due to significant changes');
+      await processAudioTranscript(transcript, false);
     } else if (!isFinal) {
       // Set a timer to process after a period of silence
       silenceTimer = setTimeout(async () => {
-        if (Date.now() - lastTranscriptTime >= 1500) {
-          // No new transcription for 1.5 seconds, treat as complete
-          await processAudioTranscript(transcript);
+        if (Date.now() - lastTranscriptTime >= 800) {
+          // No new transcription for 800ms, treat as complete
+          console.debug('Processing transcript after silence period');
+          await processAudioTranscript(transcript, false);
         }
-      }, 1500);
+      }, 800);
     }
   }
   
-  // Process transcript and send for translation if language matches
-  async function processAudioTranscript(transcript) {
+  // Process transcript and send for translation
+  async function processAudioTranscript(transcript, isFinal) {
     if (!transcript || transcript.trim() === '') return;
+    if (!isTranslatorActive) return;
     
     try {
+      // Update last processed transcript
+      lastProcessedTranscript = transcript;
+      
       // Send the transcript for translation
-      await translateText(transcript);
+      await translateText(transcript, isFinal);
     } catch (error) {
       console.error('Error processing transcript:', error);
       setStatus(`Error: ${error.message}`, true);
+      isTranslationInProgress = false;
     }
   }
 
   // Translate text using OpenAI API
-  async function translateText(text) {
+  async function translateText(text, isFinal) {
     if (!isTranslatorActive) return;
     
+    // Check if we already have this exact text cached
+    const cacheKey = `${selectedSourceLanguage}-${selectedTargetLanguage}-${text}`;
+    if (partialTranslationCache[cacheKey]) {
+      console.debug('Using cached translation:', partialTranslationCache[cacheKey]);
+      translatedTextDiv.textContent = partialTranslationCache[cacheKey];
+      return;
+    }
+    
     try {
-      setStatus('Translating...');
+      // Mark translation as in progress
+      isTranslationInProgress = true;
+      lastTranslationTime = Date.now();
+      
+      setStatus(isFinal ? 'Translating final text...' : 'Translating...');
+      console.debug(`Sending ${isFinal ? 'FINAL' : 'PARTIAL'} text for translation:`, text);
       
       const response = await fetch('/api/translate', {
         method: 'POST',
@@ -243,13 +430,22 @@ document.addEventListener('DOMContentLoaded', () => {
         throw new Error(data.error || `Translation failed: ${response.status}`);
       }
       
+      // Cache the translation for reuse
+      partialTranslationCache[cacheKey] = data.translation;
+      
       // Display translated text
       translatedTextDiv.textContent = data.translation;
       
-      setStatus('Translation complete');
+      // Log completion
+      console.debug(`Translation complete (${isFinal ? 'final' : 'partial'}):`, data.translation);
+      
+      setStatus(isFinal ? 'Translation complete' : 'Partial translation complete');
     } catch (error) {
       console.error('Translation error:', error);
       setStatus(`Translation error: ${error.message}`, true);
+    } finally {
+      // Mark translation as completed
+      isTranslationInProgress = false;
     }
   }
 
@@ -273,6 +469,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // Clear texts when language changes
     sourceTextDiv.textContent = '';
     translatedTextDiv.textContent = '';
+    lastProcessedTranscript = '';
+    partialTranslationCache = {};
+    
+    // Restart recognition with new language
+    if (isRecording) {
+      stopRecognition();
+      setTimeout(startRecognition, 300);
+    }
   });
   
   targetLanguageSelect.addEventListener('change', () => {
@@ -280,6 +484,8 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Clear translated text when target language changes
     translatedTextDiv.textContent = '';
+    lastProcessedTranscript = '';
+    partialTranslationCache = {};
   });
   
   switchLanguagesBtn.addEventListener('click', () => {
@@ -298,6 +504,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // Clear text displays
     sourceTextDiv.textContent = '';
     translatedTextDiv.textContent = '';
+    lastProcessedTranscript = '';
+    partialTranslationCache = {};
+    
+    // Restart recognition with new language
+    if (isRecording) {
+      stopRecognition();
+      setTimeout(startRecognition, 300);
+    }
   });
   
   translatorToggle.addEventListener('change', () => {
