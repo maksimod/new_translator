@@ -31,8 +31,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let translationHistory = [];
   let isFinalizing = false;
   let finalizationTimer = null;
-  let lastFinalizedTranscript = ''; // Track last finalized transcript to avoid duplicates
-  let processingFinalTranscript = false; // Flag to prevent concurrent processing
+  let lastFinalizedTranscript = '';
+  let processingFinalTranscript = false;
   
   // Language code mapping for Web Speech API
   const languageCodeMapping = {
@@ -292,7 +292,7 @@ document.addEventListener('DOMContentLoaded', () => {
     finalizationTimer = setTimeout(() => {
       console.debug('Finalization timer completed, finalizing current phrase');
       finalizeCurrentPhrase();
-    }, 800); // Wait 800ms of silence to finalize (reduced from 2000ms for faster response)
+    }, 1000); // Reduced from 2000ms to 1000ms - faster finalization
   }
   
   // Reset finalization timer if speech continues
@@ -308,11 +308,12 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Finalize the current phrase and prepare for a new one
   function finalizeCurrentPhrase() {
-    if (translatedTextDiv.textContent.trim() !== '') {
+    // Only proceed if we have content and we're not already processing a final transcript
+    if (translatedTextDiv.textContent.trim() !== '' && !processingFinalTranscript) {
       console.debug('Finalizing phrase:', translatedTextDiv.textContent);
       
-      // Store the current transcript to prevent duplicates
-      lastFinalizedTranscript = currentTranscript || lastProcessedTranscript;
+      // Store this transcript to prevent duplicate processing
+      lastFinalizedTranscript = lastProcessedTranscript;
       
       // Add current translation to history
       addTranslationToHistory(translatedTextDiv.textContent);
@@ -384,6 +385,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const now = Date.now();
     const timeSinceLastTranslation = now - lastTranslationTime;
     
+    // Don't process if it's identical to a recently finalized transcript
+    if (transcript === lastFinalizedTranscript) {
+      console.debug('Should process transcript: NO - identical to recently finalized transcript');
+      return false;
+    }
+    
     // Count words in current and last processed transcript
     const currentWords = transcript.trim().split(/\s+/);
     const lastWords = lastProcessedTranscript.trim().split(/\s+/);
@@ -404,8 +411,8 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Process if:
     // 1. It's a new phrase (first few words)
-    // 2. At least 2 new words detected (reduced from 3 for faster response)
-    // 3. Time since last translation > 500ms (reduced from 1000ms for faster response)
+    // 2. At least 2 new words detected (reduced from 3)
+    // 3. Time since last translation > 500ms (reduced from 1000ms)
     // 4. No translation is currently in progress
     
     if (lastProcessedTranscript === '' || 
@@ -437,11 +444,19 @@ document.addEventListener('DOMContentLoaded', () => {
     // Display transcript in source text area
     sourceTextDiv.textContent = transcript;
     
+    // Skip if identical to recently finalized transcript
+    if (transcript === lastFinalizedTranscript) {
+      console.debug('Skipping processing - identical to recently finalized transcript');
+      return;
+    }
+    
     // If final result or significant changes, and translator is active, process for translation
     if (isFinal && isTranslatorActive) {
       // Process immediately for better responsiveness
       console.debug('Processing FINAL transcript immediately');
+      processingFinalTranscript = true;
       await processAudioTranscript(transcript, true);
+      processingFinalTranscript = false;
     } else if (!isFinal && shouldProcessTranscript(transcript)) {
       // Process partial transcript if there are significant changes
       console.debug('Processing PARTIAL transcript due to significant changes');
@@ -449,12 +464,12 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (!isFinal) {
       // Set a timer to process after a period of silence
       silenceTimer = setTimeout(async () => {
-        if (Date.now() - lastTranscriptTime >= 400) { // Reduced from 800ms to 400ms for faster response
+        if (Date.now() - lastTranscriptTime >= 400) { // Reduced from 800ms to 400ms
           // No new transcription for 400ms, treat as complete
           console.debug('Processing transcript after silence period');
           await processAudioTranscript(transcript, false);
         }
-      }, 400); // Reduced from 800ms to 400ms for faster response
+      }, 400); // Reduced from 800ms to 400ms
     }
   }
   
@@ -480,9 +495,9 @@ document.addEventListener('DOMContentLoaded', () => {
   async function translateText(text, isFinal) {
     if (!isTranslatorActive) return;
     
-    // Check if this is a duplicate of the last finalized transcript
+    // Check if this is a duplicate of the recently finalized transcript
     if (text === lastFinalizedTranscript) {
-      console.debug('Skipping translation - duplicate of finalized transcript');
+      console.debug('Skipping translation - identical to recently finalized transcript');
       return;
     }
     
