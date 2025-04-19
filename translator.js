@@ -34,7 +34,6 @@ document.addEventListener('DOMContentLoaded', () => {
   let lastTranscriptTime = Date.now();
   let isFirstRecognition = true;
   let ignoreNextNetworkError = true;
-  let hasStartedRealRecognition = false;
   let currentTranscript = '';
   let lastProcessedTranscript = '';
   let lastTranslationTime = 0;
@@ -128,22 +127,23 @@ document.addEventListener('DOMContentLoaded', () => {
     // Populate language dropdowns
     populateLanguageDropdowns();
     
-    // Load saved language preferences from storage
-    chrome.storage.sync.get(['sourceLanguage', 'targetLanguage'], (result) => {
-      if (result.sourceLanguage) {
-        selectedSourceLanguage = result.sourceLanguage;
-        sourceLanguageSelect.value = result.sourceLanguage;
-      } else {
-        sourceLanguageSelect.value = selectedSourceLanguage;
-      }
-      
-      if (result.targetLanguage) {
-        selectedTargetLanguage = result.targetLanguage;
-        targetLanguageSelect.value = result.targetLanguage;
-      } else {
-        targetLanguageSelect.value = selectedTargetLanguage;
-      }
-    });
+    // Load saved language preferences from localStorage instead of chrome.storage
+    const savedSourceLang = localStorage.getItem('sourceLanguage');
+    const savedTargetLang = localStorage.getItem('targetLanguage');
+    
+    if (savedSourceLang) {
+      selectedSourceLanguage = savedSourceLang;
+      sourceLanguageSelect.value = savedSourceLang;
+    } else {
+      sourceLanguageSelect.value = selectedSourceLanguage;
+    }
+    
+    if (savedTargetLang) {
+      selectedTargetLanguage = savedTargetLang;
+      targetLanguageSelect.value = savedTargetLang;
+    } else {
+      targetLanguageSelect.value = selectedTargetLanguage;
+    }
   }
 
   // Populate language dropdown options
@@ -170,49 +170,18 @@ document.addEventListener('DOMContentLoaded', () => {
   function setupSpeechRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     
-    // Initialize two separate recognition instances
-    // One for warming up and one for actual usage
-    const warmupRecognition = new SpeechRecognition();
+    // Initialize directly - no warm-up
     recognition = new SpeechRecognition();
     
-    // Set recognition properties for both instances
-    warmupRecognition.continuous = false;
-    warmupRecognition.interimResults = false;
-    
+    // Set recognition properties
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.maxAlternatives = 1;
     
     // Set the language based on the selected source language
     const browserLanguageCode = languageCodeMapping[selectedSourceLanguage] || selectedSourceLanguage;
-    warmupRecognition.lang = browserLanguageCode;
     recognition.lang = browserLanguageCode;
     console.log(`Recognition language set to: ${browserLanguageCode}`);
-    
-    // Warm-up recognition events
-    warmupRecognition.onstart = () => {
-      console.log('Warm-up recognition started');
-    };
-    
-    warmupRecognition.onend = () => {
-      console.log('Warm-up recognition ended');
-      // Start real recognition after warm-up
-      setTimeout(() => {
-        if (isTranslatorActive && !hasStartedRealRecognition) {
-          hasStartedRealRecognition = true;
-          startRealRecognition();
-        }
-      }, 100);
-    };
-    
-    warmupRecognition.onerror = (event) => {
-      console.log('Warm-up error:', event.error);
-      // Start real recognition anyway
-      if (!hasStartedRealRecognition) {
-        hasStartedRealRecognition = true;
-        startRealRecognition();
-      }
-    };
     
     // Real recognition events
     recognition.onstart = () => {
@@ -236,9 +205,20 @@ document.addEventListener('DOMContentLoaded', () => {
         // Restart recognition after a short delay
         setTimeout(() => {
           if (isTranslatorActive) {
-            startRealRecognition();
+            try {
+              startRealRecognition();
+            } catch (error) {
+              console.error('Error restarting recognition:', error);
+              
+              // If failed to restart, try again after longer delay
+              setTimeout(() => {
+                if (isTranslatorActive) {
+                  startRealRecognition();
+                }
+              }, 1000);
+            }
           }
-        }, 300);
+        }, 500);
       }
     };
     
@@ -251,24 +231,24 @@ document.addEventListener('DOMContentLoaded', () => {
         translatorToggle.checked = false;
         updateToggleLabel();
       } else if (event.error === 'network') {
-        // Ignore the first network error as it's expected
-        if (ignoreNextNetworkError) {
-          console.log('Ignoring first network error (expected during initialization)');
-          ignoreNextNetworkError = false;
-        } else {
-          // Don't show network errors to avoid alarming users
-          console.log('Network error occurred, restarting recognition');
-        }
+        // Don't show network errors to avoid alarming users
+        console.log('Network error occurred, restarting recognition');
         
         // Always restart immediately after network error
         if (isTranslatorActive && !isRecording) {
-          setTimeout(startRealRecognition, 300);
+          setTimeout(() => startRealRecognition(), 500);
+        }
+      } else if (event.error === 'aborted') {
+        // Handle aborted errors differently
+        console.log('Recognition aborted, restarting if active');
+        if (isTranslatorActive && !isRecording) {
+          setTimeout(() => startRealRecognition(), 500);
         }
       } else {
         setStatus(`Recognition error: ${event.error}`, true);
         // Restart after error if still active
         if (isTranslatorActive && !isRecording) {
-          setTimeout(startRealRecognition, 500);
+          setTimeout(() => startRealRecognition(), 1000);
         }
       }
     };
@@ -320,149 +300,55 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     };
     
-    // Start the warm-up process
-    function startWarmUp() {
-      try {
-        console.log('Starting warm-up recognition...');
-        warmupRecognition.start();
-      } catch (error) {
-        console.error('Error starting warm-up recognition:', error);
-        // Start real recognition anyway
-        if (!hasStartedRealRecognition) {
-          hasStartedRealRecognition = true;
-          startRealRecognition();
-        }
-      }
-    }
-    
-    // Start the real recognition process
-    function startRealRecognition() {
-      try {
-        ignoreNextNetworkError = true;
-        console.log('Starting real recognition...');
-        recognition.start();
-      } catch (error) {
-        console.error('Error starting real recognition:', error);
-        
-        if (error.message.includes('already started')) {
-          // Recognition is already running, stop it and restart
-          try {
-            recognition.stop();
-            setTimeout(() => {
-              if (isTranslatorActive) {
-                startRealRecognition();
-              }
-            }, 300);
-          } catch (stopError) {
-            console.error('Error stopping recognition:', stopError);
+    // Start real recognition directly
+    startRealRecognition();
+  }
+  
+  // Start the real recognition process
+  function startRealRecognition() {
+    try {
+      // Reset the flag for ignoring network errors
+      ignoreNextNetworkError = true;
+      
+      // If recognition is already running, stop it first
+      if (recognition.state === 'running') {
+        console.log('Recognition is already running, stopping it first');
+        recognition.stop();
+        // Short timeout before restarting
+        setTimeout(() => {
+          if (isTranslatorActive) {
+            startRealRecognition();
           }
-        } else {
-          // For other errors, retry after a delay
+        }, 300);
+        return;
+      }
+      
+      console.log('Starting real recognition...');
+      recognition.start();
+    } catch (error) {
+      console.error('Error starting real recognition:', error);
+      
+      if (error.message && error.message.includes('already started')) {
+        // Recognition is already running, stop it and restart
+        try {
+          recognition.stop();
           setTimeout(() => {
             if (isTranslatorActive) {
               startRealRecognition();
             }
-          }, 1000);
+          }, 500);
+        } catch (stopError) {
+          console.error('Error stopping recognition:', stopError);
         }
+      } else {
+        // For other errors, retry after a delay
+        setTimeout(() => {
+          if (isTranslatorActive) {
+            startRealRecognition();
+          }
+        }, 1000);
       }
     }
-    
-    // Start the recognition process
-    startWarmUp();
-  }
-
-  // Start finalization timer for handling pauses in speech
-  function startFinalizationTimer() {
-    if (finalizationTimer) {
-      clearTimeout(finalizationTimer);
-    }
-    
-    finalizationTimer = setTimeout(() => {
-      if (currentTranscript && !isFinalizing) {
-        finalizeCurrentPhrase();
-      }
-    }, 1500); // Finalize after 1.5 seconds of silence
-  }
-  
-  // Reset the finalization timer
-  function resetFinalizationTimer() {
-    if (finalizationTimer) {
-      clearTimeout(finalizationTimer);
-      finalizationTimer = null;
-    }
-    
-    // Start a new timer
-    startFinalizationTimer();
-  }
-  
-  // Finalize the current phrase (treat as if it was final)
-  function finalizeCurrentPhrase() {
-    isFinalizing = true;
-    console.log('Finalizing current phrase due to pause:', currentTranscript);
-    
-    // Process the current transcript
-    processAudioTranscript(currentTranscript, true).then(() => {
-      // Clear the current transcript
-      currentTranscript = '';
-      isFinalizing = false;
-    }).catch(error => {
-      console.error('Error during manual finalization:', error);
-      isFinalizing = false;
-    });
-  }
-  
-  // Modified queueIterativeTranslation to handle direct API mode
-  function queueIterativeTranslation(text, isFinal) {
-    pendingTranslations.push({ text, isFinal });
-    
-    if (!isProcessingIterative) {
-      processNextIterativeTranslation();
-    }
-  }
-  
-  // Modified processNextIterativeTranslation to handle direct API mode
-  async function processNextIterativeTranslation() {
-    if (pendingTranslations.length === 0) {
-      isProcessingIterative = false;
-      return;
-    }
-    
-    isProcessingIterative = true;
-    const { text, isFinal } = pendingTranslations.shift();
-    
-    try {
-      await translateText(text, isFinal);
-    } catch (error) {
-      console.error('Error in iterative translation:', error);
-    } finally {
-      setTimeout(processNextIterativeTranslation, 50);
-    }
-  }
-  
-  // Add a translation to the history
-  function addTranslationToHistory(translation) {
-    // Don't add empty or whitespace-only translations
-    if (!translation || !translation.trim()) {
-      return;
-    }
-    
-    // Don't add duplicates of the last translation
-    if (translationHistory.length > 0 && 
-        translationHistory[translationHistory.length - 1] === translation) {
-      return;
-    }
-    
-    // Add to history array
-    translationHistory.push(translation);
-    
-    // Create and append history item element
-    const historyItem = document.createElement('div');
-    historyItem.classList.add('history-item');
-    historyItem.textContent = translation;
-    translatedHistoryDiv.appendChild(historyItem);
-    
-    // Scroll to bottom
-    translatedHistoryDiv.scrollTop = translatedHistoryDiv.scrollHeight;
   }
   
   // Start recognition process
@@ -477,35 +363,36 @@ document.addEventListener('DOMContentLoaded', () => {
           setupDirectAudioRecording();
         }
         
-        // Still setup Web Speech API for local recognition
+        // Setup speech recognition if needed
         if (!recognition) {
           setupSpeechRecognition();
+        } else {
+          // If recognition object already exists, restart it
+          startRealRecognition();
         }
-        
-        hasStartedRealRecognition = false;
-        isFirstRecognition = true;
-        startWarmUp();
         
         // Also start direct audio recording for OpenAI API transcription
         startDirectAudioRecording();
       } else {
         // If VPN is not connected, show warning
         setStatus('VPN required! Please connect to VPN before using the translator.', true);
-        // Can still initialize UI but disable functionality
-        setupSpeechRecognition();
       }
     });
   }
   
   // Stop recognition process
   function stopRecognition() {
-    if (isDirectApiMode && mediaRecorder && mediaRecorder.state === 'recording') {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
       mediaRecorder.stop();
       isDirectAudioRecording = false;
     }
     
     if (recognition) {
-      recognition.abort();
+      try {
+        recognition.abort();
+      } catch (error) {
+        console.error('Error stopping recognition:', error);
+      }
       isRecording = false;
     }
     
@@ -515,7 +402,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Update recognition language when source language changes
   function updateRecognitionLanguage() {
     // Stop current recognition
-    if (isRecording) {
+    if (isRecording && recognition) {
       try {
         recognition.stop();
       } catch (error) {
@@ -523,13 +410,15 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
     
+    // Полностью пересоздать объект распознавания речи с новым языком
+    recognition = null;
+    
     // Update language and restart
     setTimeout(() => {
       if (isTranslatorActive) {
-        hasStartedRealRecognition = false;
         setupSpeechRecognition();
       }
-    }, 300);
+    }, 500);
   }
   
   // Check if we should update the transcript display
@@ -784,13 +673,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // Event listeners
   sourceLanguageSelect.addEventListener('change', (e) => {
     selectedSourceLanguage = e.target.value;
-    chrome.storage.sync.set({ sourceLanguage: selectedSourceLanguage });
+    localStorage.setItem('sourceLanguage', selectedSourceLanguage);
     updateRecognitionLanguage();
   });
   
   targetLanguageSelect.addEventListener('change', (e) => {
     selectedTargetLanguage = e.target.value;
-    chrome.storage.sync.set({ targetLanguage: selectedTargetLanguage });
+    localStorage.setItem('targetLanguage', selectedTargetLanguage);
   });
   
   switchLanguagesBtn.addEventListener('click', () => {
@@ -803,11 +692,9 @@ document.addEventListener('DOMContentLoaded', () => {
     sourceLanguageSelect.value = selectedSourceLanguage;
     targetLanguageSelect.value = selectedTargetLanguage;
     
-    // Save to storage
-    chrome.storage.sync.set({ 
-      sourceLanguage: selectedSourceLanguage,
-      targetLanguage: selectedTargetLanguage
-    });
+    // Save to localStorage
+    localStorage.setItem('sourceLanguage', selectedSourceLanguage);
+    localStorage.setItem('targetLanguage', selectedTargetLanguage);
     
     // Update recognition language
     updateRecognitionLanguage();
@@ -859,19 +746,6 @@ document.addEventListener('DOMContentLoaded', () => {
       .vpn-warning-message {
         margin-right: 10px;
         flex: 1;
-      }
-      
-      .check-vpn-btn {
-        background-color: #007bff;
-        color: white;
-        border: none;
-        padding: 6px 12px;
-        border-radius: 4px;
-        cursor: pointer;
-      }
-      
-      .check-vpn-btn:hover {
-        background-color: #0069d9;
       }
     `;
     document.head.appendChild(style);

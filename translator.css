@@ -124,15 +124,28 @@ select {
 }
 
 input:checked + .slider {
-  background-color: #4285f4;
+  background-color: #4CAF50 !important;
+  border-color: #4CAF50 !important;
 }
 
 input:focus + .slider {
-  box-shadow: 0 0 1px #4285f4;
+  box-shadow: 0 0 1px #4CAF50 !important;
 }
 
-input:checked + .slider:before {
+.toggle-container .switch input:checked + .slider {
+  background-color: #4CAF50 !important;
+}
+
+.toggle-container .switch input:checked + .slider:before {
   transform: translateX(26px);
+}
+
+.toggle-container .switch .slider {
+  background-color: #ccc;
+}
+
+.toggle-container .switch input:focus + .slider {
+  box-shadow: 0 0 1px #4CAF50 !important;
 }
 
 .slider.round {
@@ -309,4 +322,18 @@ input:checked + .slider:before {
     flex-direction: row;
     justify-content: center;
   }
+}
+
+.check-vpn-btn {
+  background-color: #4CAF50 !important;
+  color: white;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.check-vpn-btn:hover {
+  background-color: #45a049 !important;
 } 
