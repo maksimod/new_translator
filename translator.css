@@ -79,9 +79,13 @@ select {
   margin-bottom: 2rem;
 }
 
-.toggle-label {
+.toggle-label, .direct-api-label {
   margin-left: 10px;
   font-weight: 500;
+}
+
+.direct-api-label {
+  color: #555;
 }
 
 .switch {
@@ -289,5 +293,20 @@ input:checked + .slider:before {
   .switch-languages {
     transform: rotate(90deg);
     margin: 1rem 0;
+  }
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+@media (min-width: 768px) {
+  .controls {
+    flex-direction: row;
+    justify-content: center;
   }
 } 

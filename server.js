@@ -11,6 +11,7 @@ const https = require('https');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || 'localhost';
 
 // HTTP server
 const httpServer = http.createServer(app);
@@ -272,14 +273,14 @@ function cleanupTempFiles() {
 cleanupTempFiles();
 
 // Start both HTTP and HTTPS servers
-httpServer.listen(PORT, () => {
-  console.log(`HTTP Server running on port ${PORT}`);
+httpServer.listen(PORT, HOST, () => {
+  console.log(`HTTP Server running on http://${HOST}:${PORT}`);
   console.log(`API Key configured: ${process.env.OPENAI_API_KEY ? 'Yes' : 'No'}`);
 });
 
 if (httpsServer) {
-  httpsServer.listen(3001, () => {
-    console.log(`HTTPS Server running on port 3001`);
-    console.log(`Access via https://your-ip:3001`);
+  httpsServer.listen(3001, HOST, () => {
+    console.log(`HTTPS Server running on https://${HOST}:3001`);
+    console.log(`Access via https://${HOST}:3001`);
   });
 } 
