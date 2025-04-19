@@ -676,11 +676,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
   
-  // Modify translateText function for better mobile handling
+  // Modified translateText function to handle continuous updates better
   async function translateText(text, isFinal) {
     if (!text || text.trim() === '') {
       return;
     }
+    
+    // For continuous speech, we need to prevent duplicate translations
+    // Track current translation processing
+    const translationId = Date.now();
+    const isLatestTranslation = translationId > lastTranslationTime;
+    lastTranslationTime = translationId;
     
     // Mobile devices need special handling to ensure full sentence translation
     if (browserInfo.isMobile) {
@@ -697,9 +703,24 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
     
-    // Skip repeated translations for the exact same text
-    if (isFinal && Date.now() - lastTranslationTime < 500 && text === lastProcessedTranscript) {
-      return;
+    // Check for very recent translation of very similar text
+    if (lastProcessedTranscript) {
+      const distance = levenshteinDistance(lastProcessedTranscript, text);
+      const maxLength = Math.max(lastProcessedTranscript.length, text.length);
+      const similarityPercentage = 100 - (distance / maxLength * 100);
+      
+      // If very similar content was just translated (within 1 second), skip this translation
+      // unless it's a final translation or significantly different content
+      if (!isFinal && 
+          similarityPercentage > 85 && 
+          Date.now() - lastTranslationTime < 1000) {
+        console.log('Skipping very similar translation request to prevent duplicates', {
+          similarity: similarityPercentage.toFixed(2) + '%',
+          prevText: lastProcessedTranscript,
+          newText: text
+        });
+        return;
+      }
     }
     
     // Check for cached translation for this exact text
@@ -721,11 +742,19 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       
       setStatus('Translating...');
-      lastTranslationTime = Date.now();
+      
+      // Store this text as the last processed transcript
+      lastProcessedTranscript = text;
       
       // Add delay before making next API call to avoid rate limiting
       if (Date.now() - lastTranslationTime < 750) {
         await new Promise(resolve => setTimeout(resolve, 750));
+      }
+      
+      // If no longer the latest translation request, abort
+      if (!isLatestTranslation && !isFinal) {
+        console.log('Aborting outdated translation request');
+        return;
       }
       
       // Mobile devices get longer timeout
@@ -766,6 +795,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const response = await fetch('https://api.openai.com/v1/chat/completions', requestOptions);
         clearTimeout(timeoutId);
         
+        // If no longer the latest translation request, abort
+        if (!isLatestTranslation && !isFinal) {
+          console.log('Aborting outdated translation response processing');
+          return;
+        }
+        
         if (!response.ok) {
           const errorData = await response.json();
           if (errorData.error && errorData.error.code === 'unsupported_country_region_territory') {
@@ -780,6 +815,12 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const data = await response.json();
         const translation = data.choices[0].message.content;
+        
+        // If no longer the latest translation request, abort
+        if (!isLatestTranslation && !isFinal) {
+          console.log('Discarding outdated translation result');
+          return;
+        }
         
         // Mobile validation - check if translation seems too short compared to input
         if (browserInfo.isMobile && translation) {
@@ -801,6 +842,24 @@ document.addEventListener('DOMContentLoaded', () => {
               console.log('Mobile: Using previous longer translation instead');
               return cachedTranslation;
             }
+          }
+        }
+        
+        // Check for duplicate or very similar translation to what's already displayed
+        if (translatedTextDiv.textContent) {
+          const currentTranslation = translatedTextDiv.textContent;
+          const distance = levenshteinDistance(currentTranslation, translation);
+          const maxLength = Math.max(currentTranslation.length, translation.length);
+          const similarityPercentage = 100 - (distance / maxLength * 100);
+          
+          if (similarityPercentage > 90) {
+            console.log('New translation very similar to current display, not updating UI', {
+              similarity: similarityPercentage.toFixed(2) + '%'
+            });
+            
+            // Still cache it but don't update UI if it's almost identical
+            partialTranslationCache[text] = translation;
+            return translation;
           }
         }
         
@@ -1470,20 +1529,61 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                   }
                   
+                  // Create a unique ID for this transcription processing
+                  const transcriptionTime = Date.now();
+                  const transcriptionId = `trans-${transcriptionTime}`;
+                  
                   // For mobile devices, we need to handle chunked processing
                   if (browserInfo.isMobile) {
                     // Only update if we got a meaningful transcription 
                     // or if it's different from what's already there
-                    if (transcription.trim().length > 5 && 
-                        (!sourceTextDiv.textContent || transcription !== sourceTextDiv.textContent.trim())) {
-                      console.log('Mobile: Updated transcript with new content:', transcription);
+                    const existingText = sourceTextDiv.textContent ? sourceTextDiv.textContent.trim() : '';
+                    
+                    if (transcription.trim().length > 5) {
+                      // Check if the transcription is significantly different
+                      const distance = levenshteinDistance(existingText, transcription);
+                      const maxLength = Math.max(existingText.length, transcription.length);
+                      const similarityPercentage = 100 - (distance / maxLength * 100);
+                      
+                      // If very similar content that's not an update, don't re-process
+                      if (similarityPercentage > 95 && transcription.length <= existingText.length) {
+                        console.log('Mobile: Transcription nearly identical to existing, not updating', {
+                          similarity: similarityPercentage.toFixed(2) + '%',
+                          existingLength: existingText.length,
+                          newLength: transcription.length
+                        });
+                        
+                        // Still start recording again
+                        if (isTranslatorActive) {
+                          startDirectAudioRecording();
+                        }
+                        return;
+                      }
+                      
+                      // Log this meaningful update
+                      console.log('Mobile: Updated transcript with new content:', transcription, {
+                        id: transcriptionId,
+                        similarity: existingText ? similarityPercentage.toFixed(2) + '%' : 'N/A'
+                      });
                       
                       // Update UI with transcription
                       currentTranscript = transcription;
                       sourceTextDiv.textContent = transcription;
                       
-                      // For mobile, always translate as final
-                      await translateText(transcription, true);
+                      // For mobile, translate as final only if it's significantly different
+                      // or if it's been a while since the last translation
+                      const shouldTranslateAsFinal = 
+                        !existingText ||
+                        similarityPercentage < 80 || 
+                        Date.now() - lastTranslationTime > 2000;
+                      
+                      if (shouldTranslateAsFinal) {
+                        console.log('Mobile: Translating as final', { id: transcriptionId });
+                        await translateText(transcription, true);
+                      } else {
+                        console.log('Mobile: Translating as interim', { id: transcriptionId });
+                        await translateText(transcription, false);
+                      }
                     } else {
                       console.log('Mobile: No significant change in transcript, continuing recording');
                     }
@@ -1494,7 +1594,31 @@ document.addEventListener('DOMContentLoaded', () => {
                       audioChunks = audioChunks.slice(-2);
                     }
                   } else {
-                    // Desktop behavior remains the same
+                    // Desktop behavior: Compare with current transcript to avoid duplication
+                    const existingText = sourceTextDiv.textContent ? sourceTextDiv.textContent.trim() : '';
+                    
+                    if (existingText) {
+                      const distance = levenshteinDistance(existingText, transcription);
+                      const maxLength = Math.max(existingText.length, transcription.length);
+                      const similarityPercentage = 100 - (distance / maxLength * 100);
+                      
+                      // If almost identical, don't update unless it's longer
+                      if (similarityPercentage > 90 && transcription.length <= existingText.length) {
+                        console.log('Desktop: Skipping very similar transcription', {
+                          similarity: similarityPercentage.toFixed(2) + '%',
+                          existing: existingText,
+                          new: transcription
+                        });
+                        
+                        // Start recording again if still active
+                        if (isTranslatorActive) {
+                          startDirectAudioRecording();
+                        }
+                        return;
+                      }
+                    }
+                    
+                    // Update with meaningfully different content
                     currentTranscript = transcription;
                     sourceTextDiv.textContent = transcription;
                     await translateText(transcription, true);
@@ -1835,13 +1959,43 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 2000);
   }
 
-  // Add translation to history
+  // Add translation to history with duplicate prevention
   function addTranslationToHistory(translation) {
     if (!translation || translation.trim() === '') {
       return;
     }
     
-    // Create history item
+    // Check for duplicates or very similar translations
+    const lastHistory = translationHistory.length > 0 ? translationHistory[translationHistory.length - 1] : null;
+    
+    if (lastHistory) {
+      // Calculate similarity percentage using Levenshtein distance
+      const distance = levenshteinDistance(lastHistory, translation);
+      const maxLength = Math.max(lastHistory.length, translation.length);
+      const similarityPercentage = 100 - (distance / maxLength * 100);
+      
+      // If very similar (>80% similar), just update the last history item instead of adding a new one
+      if (similarityPercentage > 80) {
+        console.log('Very similar translation detected, updating last history item instead of adding new one', {
+          similarityPercentage: similarityPercentage.toFixed(2) + '%',
+          lastHistory,
+          newTranslation: translation
+        });
+        
+        // Find the last history item in the DOM and update it
+        const historyItems = translatedHistoryDiv.querySelectorAll('.history-item');
+        if (historyItems.length > 0) {
+          const lastHistoryItem = historyItems[historyItems.length - 1];
+          lastHistoryItem.textContent = translation;
+          
+          // Also update in the array
+          translationHistory[translationHistory.length - 1] = translation;
+          return;
+        }
+      }
+    }
+    
+    // Create history item for new distinct translation
     const historyItem = document.createElement('div');
     historyItem.className = 'history-item';
     historyItem.textContent = translation;
@@ -1867,5 +2021,19 @@ document.addEventListener('DOMContentLoaded', () => {
     if (translationHistory.length > MAX_HISTORY_ITEMS) {
       translationHistory.shift();
     }
+  }
+
+  // Add animation helper functions for visual feedback
+
+  /**
+   * Adds animation class to element and removes it after animation completes
+   * @param {HTMLElement} element - The element to animate
+   * @param {string} className - The animation class to add
+   */
+  function animateElement(element, className) {
+    element.classList.add(className);
+    setTimeout(() => {
+      element.classList.remove(className);
+    }, 1500); // Match animation duration from CSS
   }
 }); 
