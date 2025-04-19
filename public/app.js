@@ -92,29 +92,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Fetch languages from the API
     fetchLanguages();
     
-    // Fetch languages from the API
-    async function fetchLanguages() {
-      try {
-        const response = await fetch('/api/languages');
-        
-        // If unauthorized, redirect to auth page
-        if (response.status === 401) {
-          window.location.href = '/auth';
-          return;
-        }
-        
-        languages = await response.json();
-        
-        // Populate language dropdowns
-        populateLanguageDropdowns();
-        
-        // Set default language selections
-        sourceLanguageSelect.value = selectedSourceLanguage;
-        targetLanguageSelect.value = selectedTargetLanguage;
-      } catch (error) {
-        setStatus(`Error fetching languages: ${error.message}`, true);
-      }
-    }
+    // Add clean UI button to header
+    addCleanUIButton();
     
     // Setup event listeners
     setupEventListeners();
@@ -126,6 +105,76 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isTranslatorActive) {
       startRecognition();
     }
+  }
+  
+  // Fetch languages from the API
+  async function fetchLanguages() {
+    try {
+      const response = await fetch('/api/languages');
+      
+      // If unauthorized, redirect to auth page
+      if (response.status === 401) {
+        window.location.href = '/auth';
+        return;
+      }
+      
+      languages = await response.json();
+      
+      // Populate language dropdowns
+      populateLanguageDropdowns();
+      
+      // Set default language selections
+      sourceLanguageSelect.value = selectedSourceLanguage;
+      targetLanguageSelect.value = selectedTargetLanguage;
+    } catch (error) {
+      setStatus(`Error fetching languages: ${error.message}`, true);
+    }
+  }
+  
+  // Add a button to manually clean the UI
+  function addCleanUIButton() {
+    const container = document.querySelector('.container');
+    const header = container.querySelector('h1');
+    
+    const cleanButton = document.createElement('button');
+    cleanButton.className = 'clean-ui-button';
+    cleanButton.textContent = 'Clear All';
+    cleanButton.title = 'Clear all translations and reset';
+    
+    cleanButton.style.position = 'absolute';
+    cleanButton.style.top = '15px';
+    cleanButton.style.right = '100px'; // Position next to logout button
+    cleanButton.style.backgroundColor = '#4CAF50';
+    cleanButton.style.color = 'white';
+    cleanButton.style.border = 'none';
+    cleanButton.style.padding = '6px 12px';
+    cleanButton.style.borderRadius = '4px';
+    cleanButton.style.cursor = 'pointer';
+    cleanButton.style.fontSize = '14px';
+    cleanButton.style.fontFamily = "'Roboto', sans-serif";
+    cleanButton.style.transition = 'background-color 0.3s';
+    
+    cleanButton.addEventListener('mouseenter', () => {
+      cleanButton.style.backgroundColor = '#388E3C';
+    });
+    
+    cleanButton.addEventListener('mouseleave', () => {
+      cleanButton.style.backgroundColor = '#4CAF50';
+    });
+    
+    cleanButton.addEventListener('click', () => {
+      // Clear translation history
+      translationHistory = [];
+      translatedHistoryDiv.innerHTML = '';
+      
+      // Clear all states and reset UI
+      clearTranslationStates();
+      
+      // Display feedback
+      setStatus('All translations cleared');
+    });
+    
+    container.insertBefore(cleanButton, header);
   }
   
   // Setup event listeners
@@ -328,8 +377,21 @@ document.addEventListener('DOMContentLoaded', () => {
         isFinal = event.results[i].isFinal;
         
         if (isFinal) {
-          currentTranscript = transcript; // Store final result
+          // Store final result and reset current transcript after processing
           console.debug('Final transcript:', transcript);
+          
+          // Process the final transcript
+          checkLanguageAndProcess(transcript, true).then(() => {
+            // Reset current transcript after processing to prevent reuse
+            currentTranscript = '';
+            
+            // Clear source text after processing is complete
+            setTimeout(() => {
+              if (sourceTextDiv.textContent === transcript) {
+                sourceTextDiv.textContent = '';
+              }
+            }, 1000);
+          });
           
           // Start a finalization timer to detect end of speech
           if (!isFinalizing) {
@@ -341,12 +403,10 @@ document.addEventListener('DOMContentLoaded', () => {
           if (isFinalizing) {
             resetFinalizationTimer();
           }
+          
+          // Check if the detected language matches the selected source language
+          checkLanguageAndProcess(transcript, false);
         }
-      }
-      
-      if (transcript.trim() !== '') {
-        // Check if the detected language matches the selected source language
-        checkLanguageAndProcess(transcript, isFinal);
       }
     };
     
@@ -437,6 +497,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Clear current translation area for new phrase
       translatedTextDiv.textContent = '';
       sourceTextDiv.textContent = '';
+      currentTranscript = '';
       
       // Reset processed transcript
       lastProcessedTranscript = '';
@@ -460,6 +521,26 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     
+    // Check for similar translations to avoid near-duplicates
+    // This helps with small variations in the recognition that produce essentially the same translation
+    const similarExists = translationHistory.some(existingTranslation => {
+      // Compare ignoring case and punctuation
+      const normalizedNew = translation.toLowerCase().replace(/[.,!?;:]/g, '').trim();
+      const normalizedExisting = existingTranslation.toLowerCase().replace(/[.,!?;:]/g, '').trim();
+      
+      // If the existing translation contains the new one or vice versa
+      // or if they're at least 80% similar, consider them duplicates
+      return normalizedExisting.includes(normalizedNew) || 
+             normalizedNew.includes(normalizedExisting) ||
+             (normalizedNew.length > 0 && 
+              levenshteinDistance(normalizedNew, normalizedExisting) / Math.max(normalizedNew.length, normalizedExisting.length) < 0.2);
+    });
+    
+    if (similarExists) {
+      console.debug('Similar translation already in history, skipping');
+      return;
+    }
+    
     // Add to array for copy functionality
     translationHistory.push(translation);
     
@@ -474,6 +555,41 @@ document.addEventListener('DOMContentLoaded', () => {
     // Scroll to the bottom to show latest translation
     const container = translatedHistoryDiv.parentElement;
     container.scrollTop = container.scrollHeight;
+  }
+  
+  // Calculate Levenshtein distance between two strings
+  // This helps determine how similar two strings are
+  function levenshteinDistance(a, b) {
+    if (a.length === 0) return b.length;
+    if (b.length === 0) return a.length;
+    
+    const matrix = [];
+    
+    // Initialize matrix
+    for (let i = 0; i <= b.length; i++) {
+      matrix[i] = [i];
+    }
+    
+    for (let j = 0; j <= a.length; j++) {
+      matrix[0][j] = j;
+    }
+    
+    // Fill matrix
+    for (let i = 1; i <= b.length; i++) {
+      for (let j = 1; j <= a.length; j++) {
+        if (b.charAt(i - 1) === a.charAt(j - 1)) {
+          matrix[i][j] = matrix[i - 1][j - 1];
+        } else {
+          matrix[i][j] = Math.min(
+            matrix[i - 1][j - 1] + 1, // substitution
+            matrix[i][j - 1] + 1,     // insertion
+            matrix[i - 1][j] + 1      // deletion
+          );
+        }
+      }
+    }
+    
+    return matrix[b.length][a.length];
   }
   
   function startRecognition() {
@@ -567,6 +683,16 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // If final result or significant changes, and translator is active, process for translation
     if (isFinal && isTranslatorActive) {
+      // If this is the same as the last finalized transcript, skip processing
+      if (transcript === lastFinalizedTranscript) {
+        console.debug('Skipping duplicate finalized transcript');
+        // Clear the source text too since it's already processed
+        setTimeout(() => {
+          sourceTextDiv.textContent = '';
+        }, 300);
+        return;
+      }
+      
       // Process immediately for better responsiveness
       console.debug('Processing FINAL transcript immediately');
       await processAudioTranscript(transcript, true);
@@ -588,6 +714,12 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Process transcript and send for translation
   async function processAudioTranscript(transcript, isFinal) {
+    // Additional check to prevent processing when application is inactive
+    if (!document.hasFocus()) {
+      console.debug('Page not in focus, skipping transcript processing');
+      return;
+    }
+    
     if (!transcript || transcript.trim() === '') return;
     if (!isTranslatorActive) return;
     
@@ -603,6 +735,21 @@ document.addEventListener('DOMContentLoaded', () => {
       // If we already finalized this transcript, skip processing
       if (lastFinalizedTranscript === transcript) {
         console.debug('Skipping already finalized transcript');
+        sourceTextDiv.textContent = '';
+        return;
+      }
+      
+      // Check if similar phrase already in history before translation
+      const normalizedTranscript = transcript.toLowerCase().replace(/[.,!?;:]/g, '').trim();
+      const possibleDuplicate = translationHistory.some(existingTranslation => {
+        const normalizedExisting = existingTranslation.toLowerCase().replace(/[.,!?;:]/g, '').trim();
+        return normalizedExisting.includes(normalizedTranscript) || 
+               normalizedTranscript.includes(normalizedExisting);
+      });
+      
+      if (possibleDuplicate && isFinal) {
+        console.debug('Possibly duplicate transcript before translation, skipping');
+        sourceTextDiv.textContent = '';
         return;
       }
       
@@ -614,21 +761,26 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!translationHistory.includes(translation)) {
           translatedTextDiv.textContent = translation;
           
-          // If it's a final transcript, only add to history if we're not already processing a final transcript
-          if (isFinal && !processingFinalTranscript) {
+          // If it's a final transcript, add to history and clear the text areas
+          if (isFinal) {
             processingFinalTranscript = true;
+            
             // Store the current transcript to prevent duplicates
             lastFinalizedTranscript = transcript;
             
             // Add to history
             addTranslationToHistory(translation);
             
-            // Clear the translation area after adding to history
+            // Clear the text areas immediately to prevent duplicates
             translatedTextDiv.textContent = '';
             
+            // Clear source text too but with small delay for better UX
             setTimeout(() => {
+              if (sourceTextDiv.textContent === transcript) {
+                sourceTextDiv.textContent = '';
+              }
               processingFinalTranscript = false;
-            }, 500);
+            }, 300);
           }
         } else {
           console.debug('Skipping duplicate translation already in history');
