@@ -134,10 +134,16 @@ document.addEventListener('DOMContentLoaded', () => {
     sourceLanguageSelect.addEventListener('change', (e) => {
       selectedSourceLanguage = e.target.value;
       updateRecognitionLanguage();
+      
+      // Reset translation cache and history
+      clearTranslationStates();
     });
     
     targetLanguageSelect.addEventListener('change', (e) => {
       selectedTargetLanguage = e.target.value;
+      
+      // Reset translation cache and history
+      clearTranslationStates();
     });
     
     // Switch languages button
@@ -151,10 +157,8 @@ document.addEventListener('DOMContentLoaded', () => {
       
       updateRecognitionLanguage();
       
-      // Clear text areas
-      sourceTextDiv.textContent = '';
-      translatedTextDiv.textContent = '';
-      currentTranscript = '';
+      // Reset translation cache and history
+      clearTranslationStates();
     });
     
     // Translator toggle
@@ -171,6 +175,36 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Copy button
     copyButton.addEventListener('click', copyTranslations);
+  }
+  
+  // Function to clear translation states
+  function clearTranslationStates() {
+    // Clear text areas
+    sourceTextDiv.textContent = '';
+    translatedTextDiv.textContent = '';
+    
+    // Clear transcript variables
+    currentTranscript = '';
+    lastProcessedTranscript = '';
+    lastFinalizedTranscript = '';
+    
+    // Clear translation cache
+    partialTranslationCache = {};
+    
+    // Reset processing flags
+    isFinalizing = false;
+    processingFinalTranscript = false;
+    isTranslationInProgress = false;
+    
+    if (finalizationTimer) {
+      clearTimeout(finalizationTimer);
+      finalizationTimer = null;
+    }
+    
+    if (silenceTimer) {
+      clearTimeout(silenceTimer);
+      silenceTimer = null;
+    }
   }
 
   // Initialize speech recognition
@@ -387,14 +421,14 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Finalize the current phrase and prepare for a new one
   function finalizeCurrentPhrase() {
-    if (translatedTextDiv.textContent.trim() !== '') {
-      console.debug('Finalizing phrase:', translatedTextDiv.textContent);
+    const currentTranslation = translatedTextDiv.textContent.trim();
+    if (currentTranslation !== '') {
+      console.debug('Finalizing phrase:', currentTranslation);
       
       // Store the current transcript to prevent duplicates
       lastFinalizedTranscript = currentTranscript || lastProcessedTranscript;
       
       // Add current translation to history only if not already in history
-      const currentTranslation = translatedTextDiv.textContent;
       const isDuplicate = translationHistory.includes(currentTranslation);
       if (!isDuplicate) {
         addTranslationToHistory(currentTranslation);
@@ -566,27 +600,40 @@ document.addEventListener('DOMContentLoaded', () => {
       // Update last processed transcript
       lastProcessedTranscript = transcript;
       
+      // If we already finalized this transcript, skip processing
+      if (lastFinalizedTranscript === transcript) {
+        console.debug('Skipping already finalized transcript');
+        return;
+      }
+      
       // Translate the transcript
       const translation = await translateText(transcript, isFinal);
       
       if (translation) {
-        translatedTextDiv.textContent = translation;
-        
-        // If it's a final transcript, only add to history if we're not already processing a final transcript
-        if (isFinal && !processingFinalTranscript) {
-          processingFinalTranscript = true;
-          // Store the current transcript to prevent duplicates
-          lastFinalizedTranscript = transcript;
+        // Only update display if this isn't a duplicate of something already in history
+        if (!translationHistory.includes(translation)) {
+          translatedTextDiv.textContent = translation;
           
-          // Add to history only if not already in history
-          const isDuplicate = translationHistory.includes(translation);
-          if (!isDuplicate) {
+          // If it's a final transcript, only add to history if we're not already processing a final transcript
+          if (isFinal && !processingFinalTranscript) {
+            processingFinalTranscript = true;
+            // Store the current transcript to prevent duplicates
+            lastFinalizedTranscript = transcript;
+            
+            // Add to history
             addTranslationToHistory(translation);
+            
+            // Clear the translation area after adding to history
+            translatedTextDiv.textContent = '';
+            
+            setTimeout(() => {
+              processingFinalTranscript = false;
+            }, 500);
           }
-          
-          setTimeout(() => {
-            processingFinalTranscript = false;
-          }, 500);
+        } else {
+          console.debug('Skipping duplicate translation already in history');
+          // Clear the translation area for duplicates
+          translatedTextDiv.textContent = '';
         }
       }
     } catch (error) {
