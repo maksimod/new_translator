@@ -809,4 +809,69 @@ button::-moz-focus-inner {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+}
+
+/* Mobile-specific improvements for text display */
+.mobile-device .source-text,
+.mobile-device .translated-text {
+  font-size: 18px;  /* Larger font for better readability */
+  line-height: 1.5;
+  padding: 10px;
+  min-height: 150px;
+  border-radius: 8px;
+  background-color: rgba(255, 255, 255, 0.8);
+  border: 1px solid #eee;
+}
+
+.mobile-device .recording {
+  background-color: rgba(255, 240, 240, 0.9);
+  border-color: #ff4136;
+  transition: background-color 0.3s ease;
+}
+
+/* Add loading indicator for mobile devices during translation */
+.mobile-device .translated-text:empty::after {
+  content: "...";
+  animation: loading-dots 1.5s infinite;
+  display: block;
+  height: 20px;
+  margin-top: 10px;
+}
+
+@keyframes loading-dots {
+  0%, 20% { content: "."; }
+  40% { content: ".."; }
+  60%, 100% { content: "..."; }
+}
+
+/* Better space utilization on mobile */
+.mobile-device .translation-container {
+  gap: 1rem;
+}
+
+.mobile-device .source-text-container,
+.mobile-device .translated-text-container {
+  padding: 0.8rem;
+}
+
+/* Fix for Safari on iOS */
+.browser-safari.mobile-device .source-text::after,
+.browser-safari.mobile-device .translated-text::after {
+  content: "";
+  display: block;
+  height: 50px; /* Extra space at bottom to make text more accessible */
+}
+
+/* Ensure text is selectable on mobile */
+.source-text, .translated-text {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  cursor: text;
+}
+
+/* Better contrast ratio for placeholder text on mobile */
+.mobile-device .source-text:empty:before,
+.mobile-device .translated-text:empty:before {
+  color: #666;
+  opacity: 0.8;
 } 

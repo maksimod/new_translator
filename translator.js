@@ -676,10 +676,25 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
   
-  // Modify translateText function
+  // Modify translateText function for better mobile handling
   async function translateText(text, isFinal) {
     if (!text || text.trim() === '') {
       return;
+    }
+    
+    // Mobile devices need special handling to ensure full sentence translation
+    if (browserInfo.isMobile) {
+      // For mobile, make sure we have a reasonable amount of text to translate
+      if (text.trim().length < 4) {
+        console.log('Mobile: Text too short for translation, skipping');
+        return;
+      }
+      
+      // For mobile, add a period at the end if there isn't a sentence-ending punctuation
+      const endsWithPunctuation = /[.!?。？！]$/.test(text.trim());
+      if (!endsWithPunctuation) {
+        text = text.trim() + '.';
+      }
     }
     
     // Skip repeated translations for the exact same text
@@ -713,12 +728,15 @@ document.addEventListener('DOMContentLoaded', () => {
         await new Promise(resolve => setTimeout(resolve, 750));
       }
       
+      // Mobile devices get longer timeout
+      const timeoutDuration = browserInfo.isMobile ? 20000 : 15000;
+      
       // Always use direct OpenAI API call
       const apiKey = getApiKey();
       
       // Setup request with timeout
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), timeoutDuration);
       
       const requestOptions = {
         method: 'POST',
@@ -731,7 +749,7 @@ document.addEventListener('DOMContentLoaded', () => {
           messages: [
             {
               role: "system",
-              content: `You are a translator from ${getLanguageName(selectedSourceLanguage)} to ${getLanguageName(selectedTargetLanguage)}. Translate the following text accurately and naturally, preserving the meaning and tone of the original text.`
+              content: `You are a translator from ${getLanguageName(selectedSourceLanguage)} to ${getLanguageName(selectedTargetLanguage)}. Translate the following text accurately and naturally, preserving the meaning and tone of the original text. ${browserInfo.isMobile ? 'Ensure you translate the COMPLETE text, not just the first few words.' : ''}`
             },
             {
               role: "user",
@@ -762,6 +780,29 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const data = await response.json();
         const translation = data.choices[0].message.content;
+        
+        // Mobile validation - check if translation seems too short compared to input
+        if (browserInfo.isMobile && translation) {
+          const inputWordCount = text.split(/\s+/).length;
+          const translationWordCount = translation.split(/\s+/).length;
+          
+          // If translation seems too short, log warning
+          if (inputWordCount > 3 && translationWordCount === 1) {
+            console.warn('Mobile: Translation suspiciously short, may be incomplete', {
+              input: text,
+              inputWords: inputWordCount,
+              translation: translation,
+              translationWords: translationWordCount
+            });
+            
+            // Try to use cached translation if it's longer
+            const cachedTranslation = translationHistory[translationHistory.length - 1];
+            if (cachedTranslation && cachedTranslation.split(/\s+/).length > translationWordCount) {
+              console.log('Mobile: Using previous longer translation instead');
+              return cachedTranslation;
+            }
+          }
+        }
         
         // Cache the translation
         partialTranslationCache[text] = translation;
@@ -958,12 +999,15 @@ document.addEventListener('DOMContentLoaded', () => {
   
   copyButton.addEventListener('click', copyTranslations);
   
-  // Modify init function to check VPN on startup
+  // Modify init function to add mobile optimizations
   function init() {
     // Add browser compatibility class to body
     document.body.classList.add(`browser-${browserInfo.browser.toLowerCase()}`);
     if (browserInfo.isMobile) {
       document.body.classList.add('mobile-device');
+      
+      // Mobile-specific optimizations
+      setupMobileOptimizations();
     }
     
     // Initialize languages
@@ -1096,6 +1140,113 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   
+  // Setup mobile-specific optimizations
+  function setupMobileOptimizations() {
+    console.log('Setting up mobile-specific optimizations');
+    
+    // Add tap-to-scroll functionality for mobile devices
+    translatedTextDiv.addEventListener('click', function() {
+      // Scroll to bottom of translation container on tap
+      const container = document.querySelector('.translated-text-container');
+      if (container) {
+        container.scrollTop = container.scrollHeight;
+      }
+    });
+    
+    // Add double-tap to clear text
+    let lastTap = 0;
+    sourceTextDiv.addEventListener('click', function(e) {
+      const currentTime = new Date().getTime();
+      const tapLength = currentTime - lastTap;
+      
+      if (tapLength < 500 && tapLength > 0) {
+        // Double tap detected
+        if (sourceTextDiv.textContent.trim() !== '') {
+          // Only clear if there's content
+          e.preventDefault();
+          currentTranscript = '';
+          sourceTextDiv.textContent = '';
+          translatedTextDiv.textContent = '';
+          // Clean cache for fresh translations
+          partialTranslationCache = {};
+        }
+      }
+      
+      lastTap = currentTime;
+    });
+    
+    // Ensure audio permission is requested explicitly on first visit
+    if (!localStorage.getItem('audioPermissionRequested')) {
+      // Create a prominent button for users to click to enable audio
+      const permissionButton = document.createElement('button');
+      permissionButton.textContent = 'Enable Microphone';
+      permissionButton.className = 'check-vpn-btn';
+      permissionButton.style.marginTop = '10px';
+      permissionButton.style.backgroundColor = '#4CAF50';
+      permissionButton.style.fontSize = '16px';
+      permissionButton.style.padding = '12px 20px';
+      permissionButton.style.width = '100%';
+      
+      document.querySelector('.controls').appendChild(permissionButton);
+      
+      permissionButton.addEventListener('click', async () => {
+        try {
+          // Request microphone permission explicitly
+          await navigator.mediaDevices.getUserMedia({ audio: true });
+          localStorage.setItem('audioPermissionRequested', 'true');
+          permissionButton.remove();
+          
+          // Now start recognition
+          if (isTranslatorActive) {
+            startRecognition();
+          }
+        } catch (error) {
+          console.error('Error requesting microphone permission:', error);
+          setStatus('Microphone access denied. Please allow microphone access in your browser settings.', true);
+          permissionButton.textContent = 'Microphone Access Denied';
+          permissionButton.style.backgroundColor = '#dc3545';
+        }
+      });
+    }
+    
+    // Add wake lock if supported - prevent screen from turning off
+    if ('wakeLock' in navigator) {
+      let wakeLock = null;
+      
+      const requestWakeLock = async () => {
+        try {
+          wakeLock = await navigator.wakeLock.request('screen');
+          console.log('Wake lock activated');
+          
+          wakeLock.addEventListener('release', () => {
+            console.log('Wake lock released');
+          });
+        } catch (error) {
+          console.error('Error requesting wake lock:', error);
+        }
+      };
+      
+      // Request wake lock when translator is active
+      translatorToggle.addEventListener('change', () => {
+        if (translatorToggle.checked && !wakeLock) {
+          requestWakeLock();
+        }
+      });
+      
+      // Re-request wake lock when page becomes visible
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && isTranslatorActive && !wakeLock) {
+          requestWakeLock();
+        }
+      });
+      
+      // Initial request if translator is active
+      if (isTranslatorActive) {
+        requestWakeLock();
+      }
+    }
+  }
+
   // Start the app
   init();
 
@@ -1110,6 +1261,14 @@ document.addEventListener('DOMContentLoaded', () => {
       // Handle data URLs (e.g. "data:audio/webm;base64,...")
       if (base64Data.includes('base64,')) {
         base64Data = base64Data.split('base64,')[1];
+      }
+      
+      // For mobile devices, ensure we're sending complete sentences
+      // by retaining the existing transcript text if available
+      let existingText = '';
+      if (browserInfo.isMobile && sourceTextDiv.textContent && sourceTextDiv.textContent.trim() !== '') {
+        existingText = sourceTextDiv.textContent.trim() + ' ';
+        console.log('Mobile device: appending to existing transcript:', existingText);
       }
       
       // Convert base64 to blob
@@ -1128,7 +1287,13 @@ document.addEventListener('DOMContentLoaded', () => {
         byteArrays.push(byteArray);
       }
       
-      const blob = new Blob(byteArrays, { type: 'audio/webm' });
+      // Use different mime type based on browser detection
+      let mimeType = 'audio/webm';
+      if (browserInfo.browser === 'Safari' || browserInfo.os === 'iOS') {
+        mimeType = 'audio/mp4';
+      }
+      
+      const blob = new Blob(byteArrays, { type: mimeType });
       
       // Create form data
       const formData = new FormData();
@@ -1139,7 +1304,16 @@ document.addEventListener('DOMContentLoaded', () => {
         formData.append('language', sourceLanguage);
       }
       
+      // On mobile, also add prompt hint to continue previous transcription
+      if (browserInfo.isMobile && existingText) {
+        formData.append('prompt', `Continue from: "${existingText.substring(0, 100)}"`);
+      }
+      
       const apiKey = getApiKey();
+      
+      // Add timeout for mobile devices
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
       
       // Make the API request
       const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
@@ -1147,8 +1321,11 @@ document.addEventListener('DOMContentLoaded', () => {
         headers: {
           'Authorization': `Bearer ${apiKey}`
         },
-        body: formData
+        body: formData,
+        signal: controller.signal
       });
+      
+      clearTimeout(timeoutId);
       
       if (!response.ok) {
         const errorData = await response.json();
@@ -1156,7 +1333,32 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       
       const data = await response.json();
-      return data.text || '';
+      let transcribedText = data.text || '';
+      
+      // For mobile devices, get a meaningful transcription by using both the previous text and new text
+      if (browserInfo.isMobile) {
+        // If we have meaningful new text
+        if (transcribedText && transcribedText.trim().length > 5) {
+          // If the new text doesn't seem to be a continuation, keep it as is
+          if (existingText && !transcribedText.startsWith(existingText.trim())) {
+            // Append only if not already starting with existing text
+            console.log('Mobile: New complete transcription detected');
+            return transcribedText;
+          } else if (existingText) {
+            // If new text is a subset of existing text, return combined text
+            if (existingText.includes(transcribedText)) {
+              console.log('Mobile: Using existing text as it contains new text');
+              return existingText.trim();
+            }
+          }
+        } else if (existingText && (!transcribedText || transcribedText.trim().length <= 5)) {
+          // If new text is too short but we have existing text, keep the existing text
+          console.log('Mobile: New text too short, keeping existing text');
+          return existingText.trim();
+        }
+      }
+      
+      return transcribedText;
     } catch (error) {
       console.error('Direct transcription error:', error);
       throw error;
@@ -1268,15 +1470,36 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                   }
                   
-                  // Update UI with transcription
-                  currentTranscript = transcription;
-                  sourceTextDiv.textContent = transcription;
-                  
-                  // Translate the text
-                  await translateText(transcription, true);
-                  
-                  // Clear audio chunks
-                  audioChunks = [];
+                  // For mobile devices, we need to handle chunked processing
+                  if (browserInfo.isMobile) {
+                    // Only update if we got a meaningful transcription 
+                    // or if it's different from what's already there
+                    if (transcription.trim().length > 5 && 
+                        (!sourceTextDiv.textContent || transcription !== sourceTextDiv.textContent.trim())) {
+                      console.log('Mobile: Updated transcript with new content:', transcription);
+                      
+                      // Update UI with transcription
+                      currentTranscript = transcription;
+                      sourceTextDiv.textContent = transcription;
+                      
+                      // For mobile, always translate as final
+                      await translateText(transcription, true);
+                    } else {
+                      console.log('Mobile: No significant change in transcript, continuing recording');
+                    }
+                    
+                    // Don't clear chunks completely on mobile to help with continuity
+                    // Just keep the last few chunks to reduce memory usage
+                    if (audioChunks.length > 3) {
+                      audioChunks = audioChunks.slice(-2);
+                    }
+                  } else {
+                    // Desktop behavior remains the same
+                    currentTranscript = transcription;
+                    sourceTextDiv.textContent = transcription;
+                    await translateText(transcription, true);
+                    audioChunks = [];
+                  }
                   
                   // Start recording again if still in direct audio mode
                   if (isTranslatorActive) {
@@ -1371,7 +1594,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Only start if not already recording
     if (mediaRecorder.state !== 'recording') {
       try {
-        audioChunks = [];
+        // Don't clear audio chunks on mobile to enable continuous speech recognition
+        if (!browserInfo.isMobile) {
+          audioChunks = [];
+        }
         
         // Add visual feedback for recording
         sourceTextDiv.classList.add('recording');
@@ -1397,9 +1623,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // Adjust recording time based on browser
         let recordingTime = 5000; // default 5 seconds
         
-        // Shorter for mobile devices to avoid memory issues
+        // Longer for mobile to capture full sentences
         if (browserInfo.isMobile) {
-          recordingTime = 3000; // 3 seconds for mobile
+          recordingTime = 6000; // 6 seconds for mobile
         }
         
         // Stop recording after the specified time
@@ -1524,6 +1750,10 @@ document.addEventListener('DOMContentLoaded', () => {
         `<strong>Error!</strong> Failed to check VPN connection: ${error.message}`;
       
       isVpnConnected = false;
+      document.querySelector('.vpn-warning').classList.remove('success');
+      document.querySelector('.vpn-warning').classList.add('error');
+      return false;
+    }
   }
 
   // Add event listener for VPN check button
