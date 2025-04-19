@@ -8,10 +8,12 @@ const { Readable } = require('stream');
 const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
+const session = require('express-session');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || 'localhost';
+const SECRET_CODE = '!*^&dfUHe378';
 
 // HTTP server
 const httpServer = http.createServer(app);
@@ -76,6 +78,70 @@ const openai = new OpenAI({
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
+app.use(session({
+  secret: crypto.randomBytes(32).toString('hex'),
+  resave: false,
+  saveUninitialized: true,
+  cookie: { 
+    secure: false, // set to true if using https only
+    maxAge: 1000 * 60 * 60 * 24 * 7 // 7 days
+  }
+}));
+
+// Authentication middleware
+const authenticateCode = (req, res, next) => {
+  // Paths that are always allowed without authentication
+  const allowedPaths = [
+    '/auth',
+    '/styles.css',
+    '/auth.css'
+  ];
+  
+  if (allowedPaths.includes(req.path)) {
+    return next();
+  }
+  
+  // Check if user is authenticated
+  if (req.session && req.session.authenticated) {
+    return next();
+  }
+  
+  // If AJAX request, return 401
+  if (req.xhr || req.headers.accept.indexOf('json') !== -1) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  
+  // If not authenticated, redirect to auth page
+  res.redirect('/auth');
+};
+
+// Serve the authentication page
+app.get('/auth', (req, res) => {
+  // If already authenticated, redirect to main page
+  if (req.session && req.session.authenticated) {
+    return res.redirect('/');
+  }
+  res.sendFile(path.join(__dirname, 'public', 'auth.html'));
+});
+
+// Handle authentication
+app.post('/auth', (req, res) => {
+  const { code } = req.body;
+  
+  if (code === SECRET_CODE) {
+    req.session.authenticated = true;
+    res.redirect('/');
+  } else {
+    // Redirect with error parameter
+    res.redirect('/auth?error=true');
+  }
+});
+
+// First apply authentication middleware to all routes
+app.use(authenticateCode);
+
+// Then serve static files (after auth check)
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Languages supported by the application
@@ -243,11 +309,6 @@ app.post('/api/translate', async (req, res) => {
     console.error('Translation error:', error);
     res.status(500).json({ error: error.message });
   }
-});
-
-// Serve the index.html for all other routes
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // Cleanup function to remove any temporary files on server start/restart

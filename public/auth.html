@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Authentication Required</title>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Roboto', sans-serif;
+      background-color: #f5f5f5;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      padding: 0;
+    }
+    
+    .auth-container {
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      width: 90%;
+      max-width: 400px;
+      padding: 2rem;
+      text-align: center;
+    }
+    
+    h1 {
+      color: #333;
+      margin-bottom: 1.5rem;
+    }
+    
+    .form-group {
+      margin-bottom: 1.5rem;
+    }
+    
+    label {
+      display: block;
+      margin-bottom: 0.5rem;
+      text-align: left;
+      font-weight: 500;
+    }
+    
+    input[type="password"] {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 16px;
+      box-sizing: border-box;
+    }
+    
+    button {
+      background-color: #4a6cf7;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      font-size: 16px;
+      cursor: pointer;
+      transition: background-color 0.3s;
+      width: 100%;
+    }
+    
+    button:hover {
+      background-color: #3a56d4;
+    }
+    
+    .error-message {
+      color: #e53935;
+      margin-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="auth-container">
+    <h1>Authentication Required</h1>
+    <p>Please enter the secret code to access the translator.</p>
+    
+    <form action="/auth" method="post">
+      <div class="form-group">
+        <label for="code">Secret Code:</label>
+        <input type="password" id="code" name="code" required autofocus>
+      </div>
+      
+      <button type="submit">Submit</button>
+      
+      <div id="error-message" class="error-message"></div>
+    </form>
+  </div>
+
+  <script>
+    // Check for error in URL parameters
+    const urlParams = new URLSearchParams(window.location.search);
+    const error = urlParams.get('error');
+    
+    if (error) {
+      document.getElementById('error-message').textContent = 'Invalid code. Please try again.';
+    }
+  </script>
+</body>
+</html> 

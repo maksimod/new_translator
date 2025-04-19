@@ -57,41 +57,120 @@ document.addEventListener('DOMContentLoaded', () => {
     return;
   }
 
-  // Fetch languages from the API
-  async function fetchLanguages() {
+  // Check authentication status before initializing
+  checkAuthenticationStatus()
+    .then(isAuthenticated => {
+      if (!isAuthenticated) {
+        window.location.href = '/auth';
+        return;
+      }
+      
+      // Initialize application
+      initializeApp();
+    })
+    .catch(error => {
+      console.error('Error checking authentication:', error);
+      window.location.href = '/auth';
+    });
+    
+  // Function to check authentication status
+  async function checkAuthenticationStatus() {
     try {
       const response = await fetch('/api/languages');
-      languages = await response.json();
-      
-      // Populate language dropdowns
-      populateLanguageDropdowns();
-      
-      // Set default language selections
-      sourceLanguageSelect.value = selectedSourceLanguage;
-      targetLanguageSelect.value = selectedTargetLanguage;
+      if (response.status === 401) {
+        return false;
+      }
+      return true;
     } catch (error) {
-      setStatus(`Error fetching languages: ${error.message}`, true);
+      console.error('Authentication check error:', error);
+      return false;
     }
   }
-
-  // Populate language dropdown options
-  function populateLanguageDropdowns() {
-    // Clear existing options
-    sourceLanguageSelect.innerHTML = '';
-    targetLanguageSelect.innerHTML = '';
+  
+  // Initialize the application after authentication check
+  function initializeApp() {
+    // Fetch languages from the API
+    fetchLanguages();
     
-    // Add options for each language
-    languages.forEach(language => {
-      const sourceOption = document.createElement('option');
-      sourceOption.value = language.code;
-      sourceOption.textContent = language.name;
-      sourceLanguageSelect.appendChild(sourceOption);
-      
-      const targetOption = document.createElement('option');
-      targetOption.value = language.code;
-      targetOption.textContent = language.name;
-      targetLanguageSelect.appendChild(targetOption);
+    // Fetch languages from the API
+    async function fetchLanguages() {
+      try {
+        const response = await fetch('/api/languages');
+        
+        // If unauthorized, redirect to auth page
+        if (response.status === 401) {
+          window.location.href = '/auth';
+          return;
+        }
+        
+        languages = await response.json();
+        
+        // Populate language dropdowns
+        populateLanguageDropdowns();
+        
+        // Set default language selections
+        sourceLanguageSelect.value = selectedSourceLanguage;
+        targetLanguageSelect.value = selectedTargetLanguage;
+      } catch (error) {
+        setStatus(`Error fetching languages: ${error.message}`, true);
+      }
+    }
+    
+    // Setup event listeners
+    setupEventListeners();
+    
+    // Setup speech recognition
+    setupSpeechRecognition();
+    
+    // Start recognition if translator is active
+    if (isTranslatorActive) {
+      startRecognition();
+    }
+  }
+  
+  // Setup event listeners
+  function setupEventListeners() {
+    // Language selection changes
+    sourceLanguageSelect.addEventListener('change', (e) => {
+      selectedSourceLanguage = e.target.value;
+      updateRecognitionLanguage();
     });
+    
+    targetLanguageSelect.addEventListener('change', (e) => {
+      selectedTargetLanguage = e.target.value;
+    });
+    
+    // Switch languages button
+    switchLanguagesBtn.addEventListener('click', () => {
+      const tempLang = selectedSourceLanguage;
+      selectedSourceLanguage = selectedTargetLanguage;
+      selectedTargetLanguage = tempLang;
+      
+      sourceLanguageSelect.value = selectedSourceLanguage;
+      targetLanguageSelect.value = selectedTargetLanguage;
+      
+      updateRecognitionLanguage();
+      
+      // Clear text areas
+      sourceTextDiv.textContent = '';
+      translatedTextDiv.textContent = '';
+      currentTranscript = '';
+    });
+    
+    // Translator toggle
+    translatorToggle.addEventListener('change', () => {
+      isTranslatorActive = translatorToggle.checked;
+      updateToggleLabel();
+      
+      if (isTranslatorActive) {
+        startRecognition();
+      } else {
+        stopRecognition();
+      }
+    });
+    
+    // Copy button
+    copyButton.addEventListener('click', copyTranslations);
   }
 
   // Initialize speech recognition
@@ -460,82 +539,77 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Process transcript and send for translation
   async function processAudioTranscript(transcript, isFinal) {
-    if (!transcript || transcript.trim() === '') return;
-    if (!isTranslatorActive) return;
-    
     try {
-      // Update last processed transcript
-      lastProcessedTranscript = transcript;
+      console.log(`Processing transcript: "${transcript}", isFinal: ${isFinal}`);
       
-      // Send the transcript for translation
-      await translateText(transcript, isFinal);
+      // Update source text display
+      sourceTextDiv.textContent = transcript;
+      
+      // Translate the transcript
+      const translation = await translateText(transcript, isFinal);
+      
+      if (translation) {
+        translatedTextDiv.textContent = translation;
+        
+        // If it's a final transcript, add to history
+        if (isFinal) {
+          addTranslationToHistory(translation);
+        }
+      }
     } catch (error) {
-      console.error('Error processing transcript:', error);
-      setStatus(`Error: ${error.message}`, true);
-      isTranslationInProgress = false;
+      console.error('Error processing audio:', error);
+      setStatus('Error processing audio: ' + error.message, true);
+      
+      // Check if this is an authentication error
+      if (error.message === 'Authentication required') {
+        window.location.href = '/auth';
+        return;
+      }
     }
   }
 
   // Translate text using OpenAI API
   async function translateText(text, isFinal) {
-    if (!isTranslatorActive) return;
-    
-    // Check if this is a duplicate of the last finalized transcript
-    if (text === lastFinalizedTranscript) {
-      console.debug('Skipping translation - duplicate of finalized transcript');
-      return;
-    }
-    
-    // Check if we already have this exact text cached
-    const cacheKey = `${selectedSourceLanguage}-${selectedTargetLanguage}-${text}`;
-    if (partialTranslationCache[cacheKey]) {
-      console.debug('Using cached translation:', partialTranslationCache[cacheKey]);
-      translatedTextDiv.textContent = partialTranslationCache[cacheKey];
-      return;
+    if (!text || text.trim() === '') {
+      return null;
     }
     
     try {
-      // Mark translation as in progress
-      isTranslationInProgress = true;
-      lastTranslationTime = Date.now();
-      
-      setStatus(isFinal ? 'Translating final text...' : 'Translating...');
-      console.debug(`Sending ${isFinal ? 'FINAL' : 'PARTIAL'} text for translation:`, text);
-      
       const response = await fetch('/api/translate', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          text,
+          text: text,
           sourceLanguage: selectedSourceLanguage,
           targetLanguage: selectedTargetLanguage
         })
       });
       
-      const data = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(data.error || `Translation failed: ${response.status}`);
+      // Check for authentication error
+      if (response.status === 401) {
+        throw new Error('Authentication required');
       }
       
-      // Cache the translation for reuse
-      partialTranslationCache[cacheKey] = data.translation;
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Translation failed');
+      }
       
-      // Display translated text
-      translatedTextDiv.textContent = data.translation;
-      
-      // Log completion
-      console.debug(`Translation complete (${isFinal ? 'final' : 'partial'}):`, data.translation);
-      
-      setStatus(isFinal ? 'Translation complete' : 'Partial translation complete');
+      const data = await response.json();
+      return data.translation;
     } catch (error) {
       console.error('Translation error:', error);
+      
+      // Check if this is an authentication error
+      if (error.message === 'Authentication required') {
+        window.location.href = '/auth';
+        return null;
+      }
+      
       setStatus(`Translation error: ${error.message}`, true);
-    } finally {
-      // Mark translation as completed
-      isTranslationInProgress = false;
+      return null;
     }
   }
 
@@ -596,75 +670,23 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 2000);
   }
 
-  // Event listeners
-  sourceLanguageSelect.addEventListener('change', () => {
-    selectedSourceLanguage = sourceLanguageSelect.value;
-    updateRecognitionLanguage();
+  // Populate language dropdown options
+  function populateLanguageDropdowns() {
+    // Clear existing options
+    sourceLanguageSelect.innerHTML = '';
+    targetLanguageSelect.innerHTML = '';
     
-    // Clear texts when language changes
-    sourceTextDiv.textContent = '';
-    translatedTextDiv.textContent = '';
-    lastProcessedTranscript = '';
-    partialTranslationCache = {};
-    
-    // Restart recognition with new language
-    if (isRecording) {
-      stopRecognition();
-      setTimeout(startRecognition, 300);
-    }
-  });
-  
-  targetLanguageSelect.addEventListener('change', () => {
-    selectedTargetLanguage = targetLanguageSelect.value;
-    
-    // Clear translated text when target language changes
-    translatedTextDiv.textContent = '';
-    lastProcessedTranscript = '';
-    partialTranslationCache = {};
-  });
-  
-  switchLanguagesBtn.addEventListener('click', () => {
-    // Swap language selections
-    const tempLang = selectedSourceLanguage;
-    selectedSourceLanguage = selectedTargetLanguage;
-    selectedTargetLanguage = tempLang;
-    
-    // Update dropdowns
-    sourceLanguageSelect.value = selectedSourceLanguage;
-    targetLanguageSelect.value = selectedTargetLanguage;
-    
-    // Update recognition language
-    updateRecognitionLanguage();
-    
-    // Clear text displays
-    sourceTextDiv.textContent = '';
-    translatedTextDiv.textContent = '';
-    lastProcessedTranscript = '';
-    partialTranslationCache = {};
-    
-    // Restart recognition with new language
-    if (isRecording) {
-      stopRecognition();
-      setTimeout(startRecognition, 300);
-    }
-  });
-  
-  translatorToggle.addEventListener('change', () => {
-    isTranslatorActive = translatorToggle.checked;
-    updateToggleLabel();
-    
-    if (isTranslatorActive) {
-      setStatus('Translator activated. Listening...');
-      startRecognition();
-    } else {
-      setStatus('Translator deactivated.');
-      stopRecognition();
-    }
-  });
-  
-  copyButton.addEventListener('click', copyTranslations);
-  
-  // Initialize the application
-  fetchLanguages();
-  setupSpeechRecognition();
+    // Add options for each language
+    languages.forEach(language => {
+      const sourceOption = document.createElement('option');
+      sourceOption.value = language.code;
+      sourceOption.textContent = language.name;
+      sourceLanguageSelect.appendChild(sourceOption);
+      
+      const targetOption = document.createElement('option');
+      targetOption.value = language.code;
+      targetOption.textContent = language.name;
+      targetLanguageSelect.appendChild(targetOption);
+    });
+  }
 }); 
