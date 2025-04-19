@@ -2,10 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
   <title>Speech Translator</title>
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="translator.css">
+  <!-- Добавляем полифиллы для старых браузеров -->
+  <script src="https://polyfill.io/v3/polyfill.min.js?features=default,es2015,es2016,es2017"></script>
 </head>
 <body>
   <div class="container">
@@ -17,7 +20,7 @@
         <select id="sourceLanguage"></select>
       </div>
       <div class="switch-languages">
-        <button id="switchLanguages">
+        <button id="switchLanguages" aria-label="Switch languages">
           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <line x1="1" y1="10" x2="23" y2="10"></line>
             <path d="M17 6l4 4-4 4"></path>
@@ -45,14 +48,14 @@
     <div class="translation-container">
       <div class="input-section">
         <div class="source-text-container">
-          <div id="sourceText" class="source-text" placeholder="Your transcribed speech will appear here..."></div>
+          <div id="sourceText" class="source-text" placeholder="Your transcribed speech will appear here..." role="textbox" aria-live="polite"></div>
         </div>
       </div>
       
       <div class="output-section">
         <div class="translated-header">
           <span>Translation</span>
-          <button id="copyButton" class="copy-button">
+          <button id="copyButton" class="copy-button" aria-label="Copy translation">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
               <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path>
@@ -62,7 +65,7 @@
         </div>
         <div class="translated-text-container">
           <div id="translatedHistory" class="translated-history"></div>
-          <div id="translatedText" class="translated-text" placeholder="Translation will appear here..."></div>
+          <div id="translatedText" class="translated-text" placeholder="Translation will appear here..." role="textbox" aria-live="polite"></div>
         </div>
       </div>
     </div>

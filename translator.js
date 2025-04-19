@@ -1,4 +1,8 @@
 document.addEventListener('DOMContentLoaded', () => {
+  // Browser detection
+  const browserInfo = detectBrowser();
+  console.log('Browser detected:', browserInfo);
+  
   // DOM elements
   const sourceLanguageSelect = document.getElementById('sourceLanguage');
   const targetLanguageSelect = document.getElementById('targetLanguage');
@@ -51,6 +55,11 @@ document.addEventListener('DOMContentLoaded', () => {
   let audioChunks = [];
   let isDirectAudioRecording = false;
   
+  // Browser compatibility flags
+  const hasSpeechRecognition = 'SpeechRecognition' in window || 'webkitSpeechRecognition' in window;
+  const hasClipboardAPI = navigator.clipboard && typeof navigator.clipboard.writeText === 'function';
+  const hasMediaRecorder = 'MediaRecorder' in window;
+  
   // Language code mapping for Web Speech API
   const languageCodeMapping = {
     'en': 'en-US',
@@ -83,6 +92,79 @@ document.addEventListener('DOMContentLoaded', () => {
     { code: 'hi', name: 'Hindi' }
   ];
   
+  // Function to detect browser type and version
+  function detectBrowser() {
+    const userAgent = navigator.userAgent;
+    let browser = "Unknown";
+    let version = "Unknown";
+    let os = "Unknown";
+    let isMobile = false;
+    
+    // Detect mobile devices
+    if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(userAgent)) {
+      isMobile = true;
+    }
+    
+    // Detect operating system
+    if (/Windows/i.test(userAgent)) {
+      os = "Windows";
+    } else if (/Macintosh|Mac OS X/i.test(userAgent)) {
+      os = "MacOS";
+    } else if (/Linux/i.test(userAgent)) {
+      os = "Linux";
+    } else if (/Android/i.test(userAgent)) {
+      os = "Android";
+    } else if (/iPhone|iPad|iPod/i.test(userAgent)) {
+      os = "iOS";
+    }
+    
+    // Detect browser
+    if (/Edg/i.test(userAgent)) {
+      browser = "Edge";
+      version = userAgent.match(/Edg\/([\d.]+)/)[1];
+    } else if (/Chrome/i.test(userAgent)) {
+      browser = "Chrome";
+      version = userAgent.match(/Chrome\/([\d.]+)/)[1];
+    } else if (/Firefox/i.test(userAgent)) {
+      browser = "Firefox";
+      version = userAgent.match(/Firefox\/([\d.]+)/)[1];
+    } else if (/Safari/i.test(userAgent) && !/Chrome/i.test(userAgent)) {
+      browser = "Safari";
+      version = userAgent.match(/Version\/([\d.]+)/)[1];
+    } else if (/MSIE|Trident/i.test(userAgent)) {
+      browser = "Internet Explorer";
+      const msieMatch = userAgent.match(/MSIE ([\d.]+)/);
+      const tridentMatch = userAgent.match(/rv:([\d.]+)/);
+      version = msieMatch ? msieMatch[1] : tridentMatch ? tridentMatch[1] : "Unknown";
+    } else if (/OPR/i.test(userAgent)) {
+      browser = "Opera";
+      version = userAgent.match(/OPR\/([\d.]+)/)[1];
+    }
+    
+    return { browser, version, os, isMobile };
+  }
+  
+  // Speech recognition fallback/polyfill for unsupported browsers
+  function setupSpeechRecognitionPolyfill() {
+    if (!hasSpeechRecognition) {
+      // Create a mock recognition object
+      return {
+        start: () => {
+          isRecording = true;
+          setStatus('Speech recognition not supported in this browser. Using direct audio recording instead.', true);
+          startDirectAudioRecording();
+        },
+        stop: () => {
+          isRecording = false;
+        },
+        abort: () => {
+          isRecording = false;
+        }
+      };
+    }
+    return null;
+  }
+  
   // API key security through obfuscation
   // This is a simplified example of key obfuscation, not meant for production use without proper security measures
   const getApiKey = () => {
@@ -114,10 +196,8 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   // Check browser support for Web Speech API
-  if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-    setStatus('Your browser does not support speech recognition. Please use Chrome or Edge.', true);
-    translatorToggle.disabled = true;
-    return;
+  if (!hasSpeechRecognition) {
+    setStatus('Your browser does not support speech recognition. Using fallback method.', true);
   }
 
   // Initialize language selection
@@ -168,140 +248,195 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Initialize speech recognition
   function setupSpeechRecognition() {
+    // Use polyfill if needed
+    const polyfill = setupSpeechRecognitionPolyfill();
+    if (polyfill) {
+      recognition = polyfill;
+      return;
+    }
+    
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     
-    // Initialize directly - no warm-up
-    recognition = new SpeechRecognition();
-    
-    // Set recognition properties
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
-    
-    // Set the language based on the selected source language
-    const browserLanguageCode = languageCodeMapping[selectedSourceLanguage] || selectedSourceLanguage;
-    recognition.lang = browserLanguageCode;
-    console.log(`Recognition language set to: ${browserLanguageCode}`);
-    
-    // Real recognition events
-    recognition.onstart = () => {
-      isRecording = true;
-      setStatus('Listening...');
-      console.debug('Recognition started, ready to capture speech');
-    };
-    
-    recognition.onend = () => {
-      isRecording = false;
-      console.debug('Recognition ended');
+    try {
+      // Initialize directly - no warm-up
+      recognition = new SpeechRecognition();
       
-      // If we have current transcript but got disconnected, try to process it
-      if (currentTranscript && currentTranscript.trim() !== '') {
-        console.debug('Processing final transcript after disconnection:', currentTranscript);
-        processAudioTranscript(currentTranscript, true);
-        currentTranscript = '';
-      }
+      // Set recognition properties
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
       
-      if (isTranslatorActive) {
-        // Restart recognition after a short delay
-        setTimeout(() => {
-          if (isTranslatorActive) {
-            try {
-              startRealRecognition();
-            } catch (error) {
-              console.error('Error restarting recognition:', error);
-              
-              // If failed to restart, try again after longer delay
-              setTimeout(() => {
-                if (isTranslatorActive) {
-                  startRealRecognition();
-                }
-              }, 1000);
+      // Set the language based on the selected source language
+      const browserLanguageCode = languageCodeMapping[selectedSourceLanguage] || selectedSourceLanguage;
+      recognition.lang = browserLanguageCode;
+      console.log(`Recognition language set to: ${browserLanguageCode}`);
+      
+      // Real recognition events
+      recognition.onstart = () => {
+        isRecording = true;
+        setStatus('Listening...');
+        console.debug('Recognition started, ready to capture speech');
+        
+        // Add visual feedback for mobile devices
+        if (browserInfo.isMobile) {
+          sourceTextDiv.classList.add('recording');
+        }
+      };
+      
+      recognition.onend = () => {
+        isRecording = false;
+        console.debug('Recognition ended');
+        
+        // Remove visual feedback for mobile devices
+        if (browserInfo.isMobile) {
+          sourceTextDiv.classList.remove('recording');
+        }
+        
+        // If we have current transcript but got disconnected, try to process it
+        if (currentTranscript && currentTranscript.trim() !== '') {
+          console.debug('Processing final transcript after disconnection:', currentTranscript);
+          processAudioTranscript(currentTranscript, true);
+          currentTranscript = '';
+        }
+        
+        if (isTranslatorActive) {
+          // Restart recognition after a short delay
+          setTimeout(() => {
+            if (isTranslatorActive) {
+              try {
+                startRealRecognition();
+              } catch (error) {
+                console.error('Error restarting recognition:', error);
+                
+                // If failed to restart, try again after longer delay
+                setTimeout(() => {
+                  if (isTranslatorActive) {
+                    startRealRecognition();
+                  }
+                }, 1000);
+              }
+            }
+          }, 500);
+        }
+      };
+      
+      recognition.onerror = (event) => {
+        console.error('Recognition error:', event.error);
+        
+        if (event.error === 'not-allowed') {
+          setStatus('Microphone access denied. Please allow microphone access.', true);
+          isTranslatorActive = false;
+          translatorToggle.checked = false;
+          updateToggleLabel();
+        } else if (event.error === 'network') {
+          // Don't show network errors to avoid alarming users
+          console.log('Network error occurred, restarting recognition');
+          
+          // Always restart immediately after network error
+          if (isTranslatorActive && !isRecording) {
+            setTimeout(() => startRealRecognition(), 500);
+          }
+        } else if (event.error === 'aborted') {
+          // Handle aborted errors differently
+          console.log('Recognition aborted, restarting if active');
+          if (isTranslatorActive && !isRecording) {
+            setTimeout(() => startRealRecognition(), 500);
+          }
+        } else {
+          setStatus(`Recognition error: ${event.error}`, true);
+          // Restart after error if still active
+          if (isTranslatorActive && !isRecording) {
+            // Fall back to direct audio recording if speech recognition fails repeatedly
+            if (hasMediaRecorder && browserInfo.browser !== 'Safari') {
+              setStatus('Switching to direct audio recording mode', true);
+              startDirectAudioRecording();
+            } else {
+              setTimeout(() => startRealRecognition(), 1000);
             }
           }
-        }, 500);
-      }
-    };
-    
-    recognition.onerror = (event) => {
-      console.error('Recognition error:', event.error);
+        }
+      };
       
-      if (event.error === 'not-allowed') {
-        setStatus('Microphone access denied. Please allow microphone access.', true);
-        isTranslatorActive = false;
-        translatorToggle.checked = false;
-        updateToggleLabel();
-      } else if (event.error === 'network') {
-        // Don't show network errors to avoid alarming users
-        console.log('Network error occurred, restarting recognition');
+      recognition.onresult = (event) => {
+        const result = event.results[event.results.length - 1];
+        const transcript = result[0].transcript;
+        const isFinal = result.isFinal;
         
-        // Always restart immediately after network error
-        if (isTranslatorActive && !isRecording) {
-          setTimeout(() => startRealRecognition(), 500);
+        console.debug(`Got ${isFinal ? 'final' : 'interim'} result:`, transcript);
+        lastTranscriptTime = Date.now();
+        
+        // Update the first recognition flag
+        if (isFirstRecognition && transcript.trim() !== '') {
+          isFirstRecognition = false;
         }
-      } else if (event.error === 'aborted') {
-        // Handle aborted errors differently
-        console.log('Recognition aborted, restarting if active');
-        if (isTranslatorActive && !isRecording) {
-          setTimeout(() => startRealRecognition(), 500);
+        
+        // Ignore very short transcripts (likely noise)
+        if (transcript.trim().length <= 1 && !isFinal) {
+          return;
         }
-      } else {
-        setStatus(`Recognition error: ${event.error}`, true);
-        // Restart after error if still active
-        if (isTranslatorActive && !isRecording) {
-          setTimeout(() => startRealRecognition(), 1000);
-        }
-      }
-    };
-    
-    recognition.onresult = (event) => {
-      const result = event.results[event.results.length - 1];
-      const transcript = result[0].transcript;
-      const isFinal = result.isFinal;
-      
-      console.debug(`Got ${isFinal ? 'final' : 'interim'} result:`, transcript);
-      lastTranscriptTime = Date.now();
-      
-      // Update the first recognition flag
-      if (isFirstRecognition && transcript.trim() !== '') {
-        isFirstRecognition = false;
-      }
-      
-      // Ignore very short transcripts (likely noise)
-      if (transcript.trim().length <= 1 && !isFinal) {
-        return;
-      }
-      
-      // Handle partial results
-      if (!isFinal) {
-        // Only update the source text if it's a significant change
-        if (shouldProcessTranscript(transcript)) {
+        
+        // Handle partial results
+        if (!isFinal) {
+          // Only update the source text if it's a significant change
+          if (shouldProcessTranscript(transcript)) {
+            currentTranscript = transcript;
+            sourceTextDiv.textContent = transcript;
+            
+            // Start finalization timer on each new result
+            resetFinalizationTimer();
+            
+            // Initiate iterative translation
+            queueIterativeTranslation(transcript, false);
+          }
+        } else {
+          // For final results, update current transcript and process it
           currentTranscript = transcript;
           sourceTextDiv.textContent = transcript;
           
-          // Start finalization timer on each new result
-          resetFinalizationTimer();
+          // Clear any pending finalization
+          if (finalizationTimer) {
+            clearTimeout(finalizationTimer);
+            finalizationTimer = null;
+          }
           
-          // Initiate iterative translation
-          queueIterativeTranslation(transcript, false);
+          // Process the final transcript
+          processAudioTranscript(transcript, true);
         }
-      } else {
-        // For final results, update current transcript and process it
-        currentTranscript = transcript;
-        sourceTextDiv.textContent = transcript;
-        
-        // Clear any pending finalization
-        if (finalizationTimer) {
-          clearTimeout(finalizationTimer);
-          finalizationTimer = null;
-        }
-        
-        // Process the final transcript
-        processAudioTranscript(transcript, true);
+      };
+      
+      // Onnomatch handler for browsers that support it (like Chrome)
+      if ('onnomatch' in recognition) {
+        recognition.onnomatch = () => {
+          console.log('No speech detected');
+          // Do nothing special, just keep listening
+        };
       }
-    };
-    
-    // Start real recognition directly
-    startRealRecognition();
+      
+      // Soundstart and soundend handlers for browsers that support it
+      if ('onsoundstart' in recognition) {
+        recognition.onsoundstart = () => {
+          console.log('Sound detected');
+        };
+      }
+      
+      if ('onsoundend' in recognition) {
+        recognition.onsoundend = () => {
+          console.log('Sound ended');
+        };
+      }
+      
+      // Start real recognition directly
+      startRealRecognition();
+    } catch (error) {
+      console.error('Error setting up speech recognition:', error);
+      // Fallback to direct audio recording
+      if (hasMediaRecorder) {
+        setStatus('Speech recognition setup failed. Using direct audio recording.', true);
+        startDirectAudioRecording();
+      } else {
+        setStatus('Speech recognition and audio recording not supported in this browser.', true);
+      }
+    }
   }
   
   // Start the real recognition process
@@ -358,35 +493,68 @@ document.addEventListener('DOMContentLoaded', () => {
       if (isConnected) {
         // If VPN is connected, proceed with recognition
         
-        // Setup direct audio recording for transcription if needed
-        if (!mediaRecorder) {
-          setupDirectAudioRecording();
-        }
+        // Reset any error states
+        sourceTextDiv.classList.remove('error');
+        translatedTextDiv.classList.remove('error');
         
-        // Setup speech recognition if needed
-        if (!recognition) {
-          setupSpeechRecognition();
+        // Choose recognition method based on browser capabilities and preference
+        // For mobile Safari, prefer direct audio recording as it's more reliable
+        if ((browserInfo.browser === 'Safari' && browserInfo.isMobile) || !hasSpeechRecognition) {
+          console.log('Using direct audio recording mode (preferred for this browser)');
+          
+          // Setup direct audio recording
+          if (!mediaRecorder) {
+            setupDirectAudioRecording();
+          }
+          
+          // Start direct recording
+          startDirectAudioRecording();
         } else {
-          // If recognition object already exists, restart it
-          startRealRecognition();
+          // For desktop browsers, prefer speech recognition API if available
+          console.log('Using Web Speech API recognition mode');
+          
+          // Setup direct audio recording as fallback
+          if (!mediaRecorder && hasMediaRecorder) {
+            setupDirectAudioRecording();
+          }
+          
+          // Setup speech recognition if needed
+          if (!recognition) {
+            setupSpeechRecognition();
+          } else {
+            // If recognition object already exists, restart it
+            startRealRecognition();
+          }
         }
         
-        // Also start direct audio recording for OpenAI API transcription
-        startDirectAudioRecording();
+        // Add visual feedback that recording is active
+        document.body.classList.add('is-recording');
       } else {
         // If VPN is not connected, show warning
         setStatus('VPN required! Please connect to VPN before using the translator.', true);
+        document.body.classList.remove('is-recording');
       }
+    }).catch(error => {
+      console.error('Error checking VPN connection:', error);
+      setStatus('Error checking VPN connection. Please try again.', true);
     });
   }
   
   // Stop recognition process
   function stopRecognition() {
+    // Stop direct audio recording if active
     if (mediaRecorder && mediaRecorder.state === 'recording') {
-      mediaRecorder.stop();
+      try {
+        mediaRecorder.stop();
+      } catch (error) {
+        console.error('Error stopping media recorder:', error);
+        // Reset media recorder if it fails to stop
+        mediaRecorder = null;
+      }
       isDirectAudioRecording = false;
     }
     
+    // Stop speech recognition if active
     if (recognition) {
       try {
         recognition.abort();
@@ -395,6 +563,10 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       isRecording = false;
     }
+    
+    // Remove recording visual indicator
+    sourceTextDiv.classList.remove('recording');
+    document.body.classList.remove('is-recording');
     
     setStatus('Recognition stopped');
   }
@@ -536,10 +708,19 @@ document.addEventListener('DOMContentLoaded', () => {
       setStatus('Translating...');
       lastTranslationTime = Date.now();
       
+      // Add delay before making next API call to avoid rate limiting
+      if (Date.now() - lastTranslationTime < 750) {
+        await new Promise(resolve => setTimeout(resolve, 750));
+      }
+      
       // Always use direct OpenAI API call
       const apiKey = getApiKey();
       
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      // Setup request with timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+      
+      const requestOptions = {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -559,43 +740,68 @@ document.addEventListener('DOMContentLoaded', () => {
           ],
           temperature: 0.3,
           max_tokens: 500
-        })
-      });
+        }),
+        signal: controller.signal
+      };
       
-      if (!response.ok) {
-        const errorData = await response.json();
-        if (errorData.error && errorData.error.code === 'unsupported_country_region_territory') {
-          await checkVpnConnection(); // Re-check VPN status
-          throw new Error('Your location is not supported. Please use VPN to connect from a supported region');
-        } else {
-          throw new Error(errorData.error?.message || 'Translation failed');
+      try {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', requestOptions);
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          const errorData = await response.json();
+          if (errorData.error && errorData.error.code === 'unsupported_country_region_territory') {
+            await checkVpnConnection(); // Re-check VPN status
+            throw new Error('Your location is not supported. Please use VPN to connect from a supported region');
+          } else if (response.status === 429) {
+            throw new Error('Rate limit exceeded. Please try again in a moment.');
+          } else {
+            throw new Error(errorData.error?.message || 'Translation failed');
+          }
         }
+        
+        const data = await response.json();
+        const translation = data.choices[0].message.content;
+        
+        // Cache the translation
+        partialTranslationCache[text] = translation;
+        
+        // Update the translated text
+        translatedTextDiv.textContent = translation;
+        
+        // If this is a final translation, add it to the history
+        if (isFinal) {
+          addTranslationToHistory(translation);
+        }
+        
+        setStatus('Translation complete');
+        return translation;
+      } catch (fetchError) {
+        // Handle AbortController timeout
+        if (fetchError.name === 'AbortError') {
+          throw new Error('Translation request timed out. Please try again.');
+        }
+        throw fetchError;
       }
-      
-      const data = await response.json();
-      const translation = data.choices[0].message.content;
-      
-      // Cache the translation
-      partialTranslationCache[text] = translation;
-      
-      // Update the translated text
-      translatedTextDiv.textContent = translation;
-      
-      // If this is a final translation, add it to the history
-      if (isFinal) {
-        addTranslationToHistory(translation);
-      }
-      
-      setStatus('Translation complete');
     } catch (error) {
       console.error('Translation error:', error);
-      setStatus(`Translation error: ${error.message}`, true);
       
-      if (error.message.includes('location is not supported')) {
-        // Show prominent VPN warning
-        document.querySelector('.vpn-warning').classList.remove('success');
-        document.querySelector('.vpn-warning').classList.add('error');
+      // Don't show API errors for non-final translations
+      if (isFinal) {
+        setStatus(`Translation error: ${error.message}`, true);
+        
+        if (error.message.includes('location is not supported')) {
+          // Show prominent VPN warning
+          document.querySelector('.vpn-warning').classList.remove('success');
+          document.querySelector('.vpn-warning').classList.add('error');
+          document.querySelector('.vpn-warning-message').innerHTML = 
+            '<strong>VPN Required!</strong> Your location is not supported. Please connect to VPN from a supported region.';
+        }
+      } else {
+        console.log('Ignoring error for non-final translation');
       }
+      
+      return null;
     } finally {
       if (isFinal) {
         isTranslationInProgress = false;
@@ -638,14 +844,53 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     if (content) {
-      navigator.clipboard.writeText(content)
-        .then(() => {
-          showCopiedNotification();
-        })
-        .catch(err => {
-          console.error('Failed to copy text: ', err);
-          setStatus('Failed to copy text', true);
-        });
+      // Modern clipboard API
+      if (hasClipboardAPI) {
+        navigator.clipboard.writeText(content)
+          .then(() => {
+            showCopiedNotification();
+          })
+          .catch(err => {
+            console.error('Failed to copy text with Clipboard API: ', err);
+            fallbackCopy(content);
+          });
+      } else {
+        fallbackCopy(content);
+      }
+    }
+  }
+  
+  // Fallback copy method for browsers without Clipboard API
+  function fallbackCopy(text) {
+    try {
+      // Create a temporary textarea element
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      
+      // Make the textarea out of viewport
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-999999px';
+      textarea.style.top = '-999999px';
+      document.body.appendChild(textarea);
+      
+      // Focus and select the text
+      textarea.focus();
+      textarea.select();
+      
+      // Execute copy command
+      const successful = document.execCommand('copy');
+      
+      // Remove the textarea
+      document.body.removeChild(textarea);
+      
+      if (successful) {
+        showCopiedNotification();
+      } else {
+        setStatus('Failed to copy text', true);
+      }
+    } catch (err) {
+      console.error('Fallback copy failed:', err);
+      setStatus('Failed to copy text. Please select and copy manually.', true);
     }
   }
   
@@ -715,6 +960,13 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Modify init function to check VPN on startup
   function init() {
+    // Add browser compatibility class to body
+    document.body.classList.add(`browser-${browserInfo.browser.toLowerCase()}`);
+    if (browserInfo.isMobile) {
+      document.body.classList.add('mobile-device');
+    }
+    
+    // Initialize languages
     initializeLanguages();
     updateToggleLabel();
     
@@ -750,12 +1002,97 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
     document.head.appendChild(style);
     
+    // Handle localStorage storage errors
+    function safeLocalStorageGetItem(key, defaultValue) {
+      try {
+        const value = localStorage.getItem(key);
+        return value !== null ? value : defaultValue;
+      } catch (e) {
+        console.error('Error accessing localStorage:', e);
+        return defaultValue;
+      }
+    }
+    
+    function safeLocalStorageSetItem(key, value) {
+      try {
+        localStorage.setItem(key, value);
+        return true;
+      } catch (e) {
+        console.error('Error writing to localStorage:', e);
+        return false;
+      }
+    }
+    
+    // Replace localStorage usage with safe versions
+    window.safeStorage = {
+      getItem: safeLocalStorageGetItem,
+      setItem: safeLocalStorageSetItem
+    };
+    
+    // Ensure interface is usable without recognition
+    if (!hasSpeechRecognition && !hasMediaRecorder) {
+      setStatus('Your browser does not support speech recognition or audio recording. Please try a different browser like Chrome, Edge, or Firefox.', true);
+      translatorToggle.checked = false;
+      isTranslatorActive = false;
+      updateToggleLabel();
+    }
+    
     // Check VPN connection on startup
     checkVpnConnection().then(isConnected => {
       // Start recognition if active and VPN is connected
       if (isTranslatorActive && isConnected) {
         startRecognition();
       }
+    });
+    
+    // Implement a heartbeat mechanism to maintain activity
+    let heartbeatInterval = null;
+    
+    function startHeartbeat() {
+      if (heartbeatInterval) clearInterval(heartbeatInterval);
+      
+      // Check every 30 seconds if recognition is still active
+      heartbeatInterval = setInterval(() => {
+        if (isTranslatorActive) {
+          // If recognition is supposed to be active but isn't, restart it
+          if (!isRecording && !isDirectAudioRecording) {
+            console.log('Heartbeat: Recognition should be active but isn\'t. Restarting...');
+            startRecognition();
+          }
+        }
+      }, 30000);
+    }
+    
+    // Start heartbeat
+    startHeartbeat();
+    
+    // Add visibility change listener to handle page becoming active/inactive
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        console.log('Page became visible, checking recognition status');
+        
+        // When page becomes visible, restart recognition if it should be active
+        if (isTranslatorActive && !isRecording && !isDirectAudioRecording) {
+          console.log('Restarting recognition after visibility change');
+          startRecognition();
+        }
+      }
+    });
+    
+    // Add global handling for network connectivity changes
+    window.addEventListener('online', () => {
+      console.log('Network connection restored');
+      // Check VPN connection on network restoration
+      checkVpnConnection().then(isConnected => {
+        if (isConnected && isTranslatorActive) {
+          startRecognition();
+        }
+      });
+    });
+    
+    window.addEventListener('offline', () => {
+      console.log('Network connection lost');
+      setStatus('Network connection lost. Waiting for connection...', true);
     });
   }
   
@@ -831,120 +1168,196 @@ document.addEventListener('DOMContentLoaded', () => {
     // If already set up, don't recreate
     if (mediaRecorder) return;
     
-    navigator.mediaDevices.getUserMedia({ audio: true })
+    // Check for MediaRecorder support
+    if (!hasMediaRecorder) {
+      console.error('MediaRecorder API not supported in this browser');
+      setStatus('Audio recording not supported in this browser.', true);
+      return;
+    }
+    
+    // Configure audio context for Safari which needs special handling
+    let constraints = { audio: true };
+    
+    // Special handling for Safari and iOS
+    if (browserInfo.browser === 'Safari' || browserInfo.os === 'iOS') {
+      constraints = {
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      };
+    }
+    
+    // Get audio stream with error handling
+    navigator.mediaDevices.getUserMedia(constraints)
       .then(stream => {
         console.log('Got audio stream for direct recording');
         
-        mediaRecorder = new MediaRecorder(stream);
-        
-        mediaRecorder.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            audioChunks.push(event.data);
+        // For Safari, we need to wrap this in a try-catch due to inconsistent behavior
+        try {
+          // Different MIME types for different browsers
+          let mimeType = 'audio/webm';
+          
+          // Check supported mime types
+          if (MediaRecorder.isTypeSupported('audio/webm')) {
+            mimeType = 'audio/webm';
+          } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+            mimeType = 'audio/mp4';
+          } else if (MediaRecorder.isTypeSupported('audio/ogg')) {
+            mimeType = 'audio/ogg';
           }
-        };
-        
-        mediaRecorder.onstop = async () => {
-          try {
-            console.log('Audio recording stopped, processing...');
-            
-            // Combine chunks into a single blob
-            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-            
-            // Skip very small recordings (likely noise or silence)
-            if (audioBlob.size < 1000) {
-              console.log('Audio recording too small, skipping');
-              
-              // Restart recording if still active
-              if (isTranslatorActive) {
-                setTimeout(() => startDirectAudioRecording(), 100);
-              }
-              return;
+          
+          // Create MediaRecorder with appropriate options
+          const options = { mimeType };
+          mediaRecorder = new MediaRecorder(stream, options);
+          
+          mediaRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+              audioChunks.push(event.data);
             }
-            
-            // Convert to base64
-            const reader = new FileReader();
-            reader.readAsDataURL(audioBlob);
-            
-            reader.onloadend = async () => {
-              const base64Audio = reader.result;
+          };
+          
+          mediaRecorder.onstop = async () => {
+            try {
+              console.log('Audio recording stopped, processing...');
               
-              // Process audio directly with OpenAI API
-              try {
-                setStatus('Transcribing audio...');
-                const transcription = await processAudioDirectly(base64Audio, selectedSourceLanguage);
-                
-                // Skip empty transcriptions
-                if (!transcription || transcription.trim() === '') {
-                  console.log('Empty transcription, skipping');
-                  
-                  // Restart recording immediately
-                  if (isTranslatorActive) {
-                    startDirectAudioRecording();
-                  }
-                  return;
-                }
-                
-                // Update UI with transcription
-                currentTranscript = transcription;
-                sourceTextDiv.textContent = transcription;
-                
-                // Translate the text
-                await translateText(transcription, true);
-                
-                // Clear audio chunks
-                audioChunks = [];
-                
-                // Start recording again if still in direct audio mode
+              // Skip processing if there are no chunks
+              if (audioChunks.length === 0) {
+                console.log('No audio chunks recorded, skipping');
                 if (isTranslatorActive) {
-                  startDirectAudioRecording();
+                  setTimeout(() => startDirectAudioRecording(), 100);
                 }
-              } catch (error) {
-                console.error('Error transcribing audio:', error);
-                setStatus(`Transcription error: ${error.message}`, true);
+                return;
+              }
+              
+              // Combine chunks into a single blob
+              const audioBlob = new Blob(audioChunks, { type: mimeType });
+              
+              // Skip very small recordings (likely noise or silence)
+              if (audioBlob.size < 1000) {
+                console.log('Audio recording too small, skipping');
                 
-                if (error.message.includes('location is not supported') || 
-                    error.message.includes('Country, region, or territory not supported')) {
-                  // Problem with VPN, update warning message
-                  setStatus('VPN error: Your location is not supported. Please check your VPN connection.', true);
-                  document.querySelector('.vpn-warning').classList.remove('success');
-                  document.querySelector('.vpn-warning').classList.add('error');
+                // Restart recording if still active
+                if (isTranslatorActive) {
+                  setTimeout(() => startDirectAudioRecording(), 100);
+                }
+                return;
+              }
+              
+              // Convert to base64
+              const reader = new FileReader();
+              reader.readAsDataURL(audioBlob);
+              
+              reader.onloadend = async () => {
+                const base64Audio = reader.result;
+                
+                // Process audio directly with OpenAI API
+                try {
+                  setStatus('Transcribing audio...');
+                  const transcription = await processAudioDirectly(base64Audio, selectedSourceLanguage);
                   
-                  // Wait a bit before retrying
-                  setTimeout(() => {
-                    if (isTranslatorActive) {
-                      checkVpnConnection().then(isConnected => {
-                        if (isConnected) {
-                          startDirectAudioRecording();
-                        }
-                      });
-                    }
-                  }, 5000);
-                } else {
-                  // Other errors, just restart recording after a short delay
-                  setTimeout(() => {
+                  // Skip empty transcriptions
+                  if (!transcription || transcription.trim() === '') {
+                    console.log('Empty transcription, skipping');
+                    
+                    // Restart recording immediately
                     if (isTranslatorActive) {
                       startDirectAudioRecording();
                     }
-                  }, 1000);
+                    return;
+                  }
+                  
+                  // Update UI with transcription
+                  currentTranscript = transcription;
+                  sourceTextDiv.textContent = transcription;
+                  
+                  // Translate the text
+                  await translateText(transcription, true);
+                  
+                  // Clear audio chunks
+                  audioChunks = [];
+                  
+                  // Start recording again if still in direct audio mode
+                  if (isTranslatorActive) {
+                    startDirectAudioRecording();
+                  }
+                } catch (error) {
+                  console.error('Error transcribing audio:', error);
+                  setStatus(`Transcription error: ${error.message}`, true);
+                  
+                  if (error.message.includes('location is not supported') || 
+                      error.message.includes('Country, region, or territory not supported')) {
+                    // Problem with VPN, update warning message
+                    setStatus('VPN error: Your location is not supported. Please check your VPN connection.', true);
+                    document.querySelector('.vpn-warning').classList.remove('success');
+                    document.querySelector('.vpn-warning').classList.add('error');
+                    
+                    // Wait a bit before retrying
+                    setTimeout(() => {
+                      if (isTranslatorActive) {
+                        checkVpnConnection().then(isConnected => {
+                          if (isConnected) {
+                            startDirectAudioRecording();
+                          }
+                        });
+                      }
+                    }, 5000);
+                  } else {
+                    // Other errors, just restart recording after a short delay
+                    setTimeout(() => {
+                      if (isTranslatorActive) {
+                        startDirectAudioRecording();
+                      }
+                    }, 1000);
+                  }
                 }
-              }
-            };
-          } catch (error) {
-            console.error('Error processing audio recording:', error);
-            setStatus(`Recording error: ${error.message}`, true);
+              };
+              
+              reader.onerror = (error) => {
+                console.error('Error reading audio blob:', error);
+                
+                // Restart recording after error
+                if (isTranslatorActive) {
+                  setTimeout(() => startDirectAudioRecording(), 1000);
+                }
+              };
+            } catch (error) {
+              console.error('Error processing audio recording:', error);
+              setStatus(`Recording error: ${error.message}`, true);
+              
+              // Restart recording after error
+              setTimeout(() => {
+                if (isTranslatorActive) {
+                  startDirectAudioRecording();
+                }
+              }, 1000);
+            }
+          };
+          
+          mediaRecorder.onerror = (event) => {
+            console.error('MediaRecorder error:', event.error);
+            setStatus('Error recording audio. Trying to restart...', true);
             
-            // Restart recording after error
+            // Try to recreate the media recorder
+            mediaRecorder = null;
             setTimeout(() => {
               if (isTranslatorActive) {
-                startDirectAudioRecording();
+                setupDirectAudioRecording();
               }
             }, 1000);
-          }
-        };
-        
+          };
+          
+        } catch (error) {
+          console.error('Error creating MediaRecorder:', error);
+          setStatus(`MediaRecorder error: ${error.message}. Audio recording may not work.`, true);
+        }
       }).catch(error => {
         console.error('Error accessing microphone:', error);
         setStatus('Microphone access denied. Please allow microphone access.', true);
+        translatorToggle.checked = false;
+        isTranslatorActive = false;
+        updateToggleLabel();
       });
   }
 
@@ -957,20 +1370,66 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Only start if not already recording
     if (mediaRecorder.state !== 'recording') {
-      audioChunks = [];
-      mediaRecorder.start();
-      isDirectAudioRecording = true;
-      setStatus('Listening (VPN mode)...');
-      
-      // Stop recording after 5 seconds (to avoid too large files)
-      // Then immediately restart to create continuous recording
-      setTimeout(() => {
-        if (mediaRecorder && mediaRecorder.state === 'recording') {
-          mediaRecorder.stop();
-          isDirectAudioRecording = false;
-          // mediaRecorder.onstop will handle processing and restart
+      try {
+        audioChunks = [];
+        
+        // Add visual feedback for recording
+        sourceTextDiv.classList.add('recording');
+        
+        // Safari requires specific error handling
+        if (browserInfo.browser === 'Safari' || browserInfo.os === 'iOS') {
+          try {
+            mediaRecorder.start();
+          } catch (error) {
+            console.error('Error starting MediaRecorder in Safari:', error);
+            // Recreate MediaRecorder for Safari
+            mediaRecorder = null;
+            setupDirectAudioRecording();
+            return;
+          }
+        } else {
+          mediaRecorder.start();
         }
-      }, 5000);
+        
+        isDirectAudioRecording = true;
+        setStatus('Listening (Direct Mode)...');
+        
+        // Adjust recording time based on browser
+        let recordingTime = 5000; // default 5 seconds
+        
+        // Shorter for mobile devices to avoid memory issues
+        if (browserInfo.isMobile) {
+          recordingTime = 3000; // 3 seconds for mobile
+        }
+        
+        // Stop recording after the specified time
+        // Then immediately restart to create continuous recording
+        setTimeout(() => {
+          if (mediaRecorder && mediaRecorder.state === 'recording') {
+            try {
+              mediaRecorder.stop();
+              isDirectAudioRecording = false;
+              sourceTextDiv.classList.remove('recording');
+              // mediaRecorder.onstop will handle processing and restart
+            } catch (error) {
+              console.error('Error stopping MediaRecorder:', error);
+              // Try to recreate and restart
+              mediaRecorder = null;
+              if (isTranslatorActive) {
+                setTimeout(() => setupDirectAudioRecording(), 500);
+              }
+            }
+          }
+        }, recordingTime);
+      } catch (error) {
+        console.error('Error in startDirectAudioRecording:', error);
+        // Reset and try again
+        mediaRecorder = null;
+        sourceTextDiv.classList.remove('recording');
+        if (isTranslatorActive) {
+          setTimeout(() => setupDirectAudioRecording(), 1000);
+        }
+      }
     }
   }
 
@@ -980,41 +1439,91 @@ document.addEventListener('DOMContentLoaded', () => {
       setStatus('Checking VPN connection...');
       const apiKey = getApiKey();
       
-      // Try a minimal call to OpenAI to check connectivity
-      const response = await fetch('https://api.openai.com/v1/models', {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`
-        }
-      });
+      // Setup request with timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
       
-      if (response.ok) {
-        console.log('VPN connection successful - OpenAI API accessible');
-        setStatus('VPN connection successful!');
-        isVpnConnected = true;
-        document.querySelector('.vpn-warning').classList.add('success');
-        return true;
-      } else {
-        console.log('VPN connection failed - OpenAI API returned error');
-        const errorData = await response.json();
-        if (errorData.error && errorData.error.code === 'unsupported_country_region_territory') {
-          setStatus('VPN error: Your location is not supported. Please use VPN to connect from a supported region', true);
+      try {
+        // Try a minimal call to OpenAI to check connectivity
+        const response = await fetch('https://api.openai.com/v1/models', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`
+          },
+          signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (response.ok) {
+          console.log('VPN connection successful - OpenAI API accessible');
+          setStatus('VPN connection successful!');
+          isVpnConnected = true;
+          
+          // Update VPN warning UI
+          const vpnWarning = document.querySelector('.vpn-warning');
+          vpnWarning.classList.remove('error');
+          vpnWarning.classList.add('success');
+          document.querySelector('.vpn-warning-message').innerHTML = 
+            '<strong>VPN Connected!</strong> You can now use the translator.';
+          
+          return true;
         } else {
-          setStatus('VPN connection failed - OpenAI API returned an error', true);
+          console.log('VPN connection failed - OpenAI API returned error');
+          const errorData = await response.json();
+          
+          // Check for specific errors
+          if (errorData.error && errorData.error.code === 'unsupported_country_region_territory') {
+            setStatus('VPN error: Your location is not supported. Please use VPN to connect from a supported region', true);
+            document.querySelector('.vpn-warning-message').innerHTML = 
+              '<strong>VPN Required!</strong> Your location is not supported. Please connect to VPN from a supported region.';
+          } else if (response.status === 401) {
+            setStatus('API key error: Please check your API key', true);
+            document.querySelector('.vpn-warning-message').innerHTML = 
+              '<strong>API Key Error!</strong> Please check your API key configuration.';
+          } else if (response.status === 429) {
+            setStatus('Rate limit exceeded. Please try again later.', true);
+            document.querySelector('.vpn-warning-message').innerHTML = 
+              '<strong>Rate Limited!</strong> OpenAI API rate limit exceeded. Please try again later.';
+          } else {
+            setStatus('VPN connection failed - OpenAI API returned an error', true);
+            document.querySelector('.vpn-warning-message').innerHTML = 
+              `<strong>Connection Error!</strong> ${errorData.error?.message || 'Unknown API error'}`;
+          }
+          
+          isVpnConnected = false;
+          document.querySelector('.vpn-warning').classList.remove('success');
+          document.querySelector('.vpn-warning').classList.add('error');
+          return false;
         }
+      } catch (fetchError) {
+        clearTimeout(timeoutId);
+        
+        // Handle AbortController timeout
+        if (fetchError.name === 'AbortError') {
+          console.error('VPN check timed out');
+          setStatus('VPN connection check timed out. Please check your internet connection.', true);
+        } else {
+          console.error('VPN check error:', fetchError);
+          setStatus('VPN connection failed - Please ensure your VPN is active', true);
+        }
+        
+        document.querySelector('.vpn-warning-message').innerHTML = 
+          `<strong>Connection Error!</strong> ${fetchError.message || 'Failed to connect to OpenAI API. Please check your internet and VPN.'}`;
+        
         isVpnConnected = false;
         document.querySelector('.vpn-warning').classList.remove('success');
         document.querySelector('.vpn-warning').classList.add('error');
         return false;
       }
     } catch (error) {
-      console.error('VPN check error:', error);
-      setStatus('VPN connection failed - Please ensure your VPN is active', true);
+      console.error('General VPN check error:', error);
+      setStatus('Error checking VPN connection: ' + error.message, true);
+      
+      document.querySelector('.vpn-warning-message').innerHTML = 
+        `<strong>Error!</strong> Failed to check VPN connection: ${error.message}`;
+      
       isVpnConnected = false;
-      document.querySelector('.vpn-warning').classList.remove('success');
-      document.querySelector('.vpn-warning').classList.add('error');
-      return false;
-    }
   }
 
   // Add event listener for VPN check button
@@ -1026,4 +1535,107 @@ document.addEventListener('DOMContentLoaded', () => {
       startRecognition();
     }
   });
+
+  // Custom function to queue iterative translation
+  function queueIterativeTranslation(transcript, isFinal) {
+    // Skip if translation is in progress or transcript is empty
+    if (isProcessingIterative || !transcript || transcript.trim() === '') {
+      return;
+    }
+    
+    // For final translations, always process
+    // For interim, only if not currently translating
+    if (isFinal || !isTranslationInProgress) {
+      pendingTranslations.push({ text: transcript, isFinal });
+      processNextTranslation();
+    }
+  }
+
+  // Process the next translation in the queue
+  function processNextTranslation() {
+    if (isProcessingIterative || pendingTranslations.length === 0) {
+      return;
+    }
+    
+    isProcessingIterative = true;
+    const { text, isFinal } = pendingTranslations.shift();
+    
+    translateText(text, isFinal)
+      .then(() => {
+        isProcessingIterative = false;
+        // Process next item if available
+        if (pendingTranslations.length > 0) {
+          // For non-final translations, only keep the latest
+          if (!pendingTranslations[pendingTranslations.length - 1].isFinal) {
+            pendingTranslations = [pendingTranslations[pendingTranslations.length - 1]];
+          }
+          processNextTranslation();
+        }
+      })
+      .catch(error => {
+        console.error('Error in processNextTranslation:', error);
+        isProcessingIterative = false;
+        // Continue with next item despite error
+        if (pendingTranslations.length > 0) {
+          setTimeout(processNextTranslation, 1000);
+        }
+      });
+  }
+
+  // Reset finalization timer
+  function resetFinalizationTimer() {
+    // Clear existing timer
+    if (finalizationTimer) {
+      clearTimeout(finalizationTimer);
+    }
+    
+    // Set new timer - after 2 seconds of no updates, consider it final
+    finalizationTimer = setTimeout(() => {
+      if (currentTranscript && currentTranscript.trim() !== '') {
+        console.log('No updates for 2 seconds, finalizing transcript:', currentTranscript);
+        isFinalizing = true;
+        
+        // Process as final
+        processAudioTranscript(currentTranscript, true);
+        
+        // Reset
+        currentTranscript = '';
+        isFinalizing = false;
+      }
+    }, 2000);
+  }
+
+  // Add translation to history
+  function addTranslationToHistory(translation) {
+    if (!translation || translation.trim() === '') {
+      return;
+    }
+    
+    // Create history item
+    const historyItem = document.createElement('div');
+    historyItem.className = 'history-item';
+    historyItem.textContent = translation;
+    
+    // Add to history
+    translatedHistoryDiv.appendChild(historyItem);
+    
+    // Scroll to latest
+    translatedHistoryDiv.scrollTop = translatedHistoryDiv.scrollHeight;
+    
+    // Limit history items
+    const MAX_HISTORY_ITEMS = 10;
+    const historyItems = translatedHistoryDiv.querySelectorAll('.history-item');
+    
+    if (historyItems.length > MAX_HISTORY_ITEMS) {
+      translatedHistoryDiv.removeChild(historyItems[0]);
+    }
+    
+    // Save to array
+    translationHistory.push(translation);
+    
+    // Limit array size
+    if (translationHistory.length > MAX_HISTORY_ITEMS) {
+      translationHistory.shift();
+    }
+  }
 }); 
