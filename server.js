@@ -138,6 +138,16 @@ app.post('/auth', (req, res) => {
   }
 });
 
+// Handle logout
+app.get('/logout', (req, res) => {
+  req.session.destroy((err) => {
+    if (err) {
+      console.error('Error destroying session:', err);
+    }
+    res.redirect('/auth');
+  });
+});
+
 // First apply authentication middleware to all routes
 app.use(authenticateCode);
 

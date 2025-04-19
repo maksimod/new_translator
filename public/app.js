@@ -393,8 +393,12 @@ document.addEventListener('DOMContentLoaded', () => {
       // Store the current transcript to prevent duplicates
       lastFinalizedTranscript = currentTranscript || lastProcessedTranscript;
       
-      // Add current translation to history
-      addTranslationToHistory(translatedTextDiv.textContent);
+      // Add current translation to history only if not already in history
+      const currentTranslation = translatedTextDiv.textContent;
+      const isDuplicate = translationHistory.includes(currentTranslation);
+      if (!isDuplicate) {
+        addTranslationToHistory(currentTranslation);
+      }
       
       // Clear current translation area for new phrase
       translatedTextDiv.textContent = '';
@@ -411,6 +415,17 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Add translation to history
   function addTranslationToHistory(translation) {
+    // Don't add empty translations
+    if (!translation || translation.trim() === '') {
+      return;
+    }
+    
+    // Check if this translation already exists in history
+    if (translationHistory.includes(translation)) {
+      console.debug('Translation already in history, skipping');
+      return;
+    }
+    
     // Add to array for copy functionality
     translationHistory.push(translation);
     
@@ -539,11 +554,17 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Process transcript and send for translation
   async function processAudioTranscript(transcript, isFinal) {
+    if (!transcript || transcript.trim() === '') return;
+    if (!isTranslatorActive) return;
+    
     try {
       console.log(`Processing transcript: "${transcript}", isFinal: ${isFinal}`);
       
       // Update source text display
       sourceTextDiv.textContent = transcript;
+      
+      // Update last processed transcript
+      lastProcessedTranscript = transcript;
       
       // Translate the transcript
       const translation = await translateText(transcript, isFinal);
@@ -551,9 +572,21 @@ document.addEventListener('DOMContentLoaded', () => {
       if (translation) {
         translatedTextDiv.textContent = translation;
         
-        // If it's a final transcript, add to history
-        if (isFinal) {
-          addTranslationToHistory(translation);
+        // If it's a final transcript, only add to history if we're not already processing a final transcript
+        if (isFinal && !processingFinalTranscript) {
+          processingFinalTranscript = true;
+          // Store the current transcript to prevent duplicates
+          lastFinalizedTranscript = transcript;
+          
+          // Add to history only if not already in history
+          const isDuplicate = translationHistory.includes(translation);
+          if (!isDuplicate) {
+            addTranslationToHistory(translation);
+          }
+          
+          setTimeout(() => {
+            processingFinalTranscript = false;
+          }, 500);
         }
       }
     } catch (error) {
@@ -574,7 +607,27 @@ document.addEventListener('DOMContentLoaded', () => {
       return null;
     }
     
+    // Check if this is a duplicate of the last finalized transcript
+    if (text === lastFinalizedTranscript && !isFinal) {
+      console.debug('Skipping translation - duplicate of finalized transcript');
+      return null;
+    }
+    
+    // Check if we already have this exact text cached
+    const cacheKey = `${selectedSourceLanguage}-${selectedTargetLanguage}-${text}`;
+    if (partialTranslationCache[cacheKey]) {
+      console.debug('Using cached translation:', partialTranslationCache[cacheKey]);
+      return partialTranslationCache[cacheKey];
+    }
+    
     try {
+      // Mark translation as in progress
+      isTranslationInProgress = true;
+      lastTranslationTime = Date.now();
+      
+      setStatus(isFinal ? 'Translating final text...' : 'Translating...');
+      console.debug(`Sending ${isFinal ? 'FINAL' : 'PARTIAL'} text for translation:`, text);
+      
       const response = await fetch('/api/translate', {
         method: 'POST',
         headers: {
@@ -598,6 +651,15 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       
       const data = await response.json();
+      
+      // Cache the translation for reuse
+      partialTranslationCache[cacheKey] = data.translation;
+      
+      // Log completion
+      console.debug(`Translation complete (${isFinal ? 'final' : 'partial'}):`, data.translation);
+      
+      setStatus(isFinal ? 'Translation complete' : 'Partial translation complete');
+      
       return data.translation;
     } catch (error) {
       console.error('Translation error:', error);
@@ -610,6 +672,9 @@ document.addEventListener('DOMContentLoaded', () => {
       
       setStatus(`Translation error: ${error.message}`, true);
       return null;
+    } finally {
+      // Mark translation as completed
+      isTranslationInProgress = false;
     }
   }
 
