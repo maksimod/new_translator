@@ -47,6 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let isFinalizing = false;
   let finalizationTimer = null;
   let pendingTranslations = [];
+  let pendingRetries = []; // Store translations that failed due to connection issues
   let isProcessingIterative = false;
   let isVpnConnected = false; // Tracking VPN connection status
   let networkErrorCount = 0; // Track consecutive network errors for backoff
@@ -760,7 +761,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
   
-  // Modified translateText function to handle continuous updates better
+  // Add a method to check if an error is a connection reset error
+  function isConnectionResetError(error) {
+    if (!error) return false;
+    
+    const errorString = error.toString().toLowerCase();
+    return errorString.includes('econnreset') || 
+           errorString.includes('connection reset') ||
+           errorString.includes('network error') ||
+           errorString.includes('failed to fetch');
+  }
+  
+  // Modified translateText function to specifically handle ECONNRESET errors
   async function translateText(text, isFinal) {
     if (!text || text.trim() === '') {
       return;
@@ -826,36 +838,63 @@ document.addEventListener('DOMContentLoaded', () => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
       
-      const response = await fetchWithRetry('/api/translate', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          text: text,
-          sourceLanguage: selectedSourceLanguage,
-          targetLanguage: selectedTargetLanguage
-        }),
-        signal: controller.signal
-      }, 2); // Allow 2 retries
+      // Local retry functionality for faster response to connection issues
+      let localRetryCount = 0;
+      const maxLocalRetries = 2;
       
-      clearTimeout(timeoutId);
-      
-      if (!response.ok) {
-        // Parse the error with better error handling
-        const errorText = await response.text();
-        let errorData = { error: 'Unknown error' };
-        
+      async function makeTranslationRequest() {
         try {
-          errorData = JSON.parse(errorText);
-        } catch (e) {
-          console.error('Failed to parse error response:', e);
+          const response = await fetch('/api/translate', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              text: text,
+              sourceLanguage: selectedSourceLanguage,
+              targetLanguage: selectedTargetLanguage
+            }),
+            signal: controller.signal
+          });
+          
+          if (!response.ok) {
+            // Parse the error with better error handling
+            const errorText = await response.text();
+            let errorData = { error: 'Unknown error' };
+            
+            try {
+              errorData = JSON.parse(errorText);
+            } catch (e) {
+              console.error('Failed to parse error response:', e);
+            }
+            
+            const error = new Error(errorData.error || 'Translation failed');
+            // Add additional info to the error
+            error.isNetworkError = errorData.isNetworkError;
+            error.retriedCount = errorData.retriedCount;
+            throw error;
+          }
+          
+          return await response.json();
+        } catch (error) {
+          // Check for connection reset errors that can be retried locally
+          if (isConnectionResetError(error) && localRetryCount < maxLocalRetries) {
+            localRetryCount++;
+            const delay = 1000 * Math.pow(1.5, localRetryCount);
+            console.log(`Connection reset, local retry ${localRetryCount}/${maxLocalRetries} after ${delay}ms`);
+            
+            // Wait and retry
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return makeTranslationRequest(); // Recursive retry
+          }
+          
+          // Otherwise rethrow
+          throw error;
         }
-        
-        throw new Error(errorData.error || 'Translation failed');
       }
       
-      const data = await response.json();
+      const data = await makeTranslationRequest();
+      clearTimeout(timeoutId);
       
       // Clear loading state
       sourceTextDiv.classList.remove('translating');
@@ -871,6 +910,12 @@ document.addEventListener('DOMContentLoaded', () => {
         // Reset error state if successful
         sourceTextDiv.classList.remove('error');
         translatedTextDiv.classList.remove('error');
+        
+        // Reset network error count on successful translation
+        if (networkErrorCount > 0) {
+          networkErrorCount = 0;
+          console.log('Reset network error count after successful translation');
+        }
         
         // Add to history if it's a final translation
         if (isFinal && data.translation) {
@@ -894,28 +939,38 @@ document.addEventListener('DOMContentLoaded', () => {
       sourceTextDiv.classList.add('error');
       translatedTextDiv.classList.add('error');
       
-      // Check for network errors vs other errors
+      // Check for different types of errors
       if (error.name === 'AbortError') {
         setStatus('Translation request timed out. Your network may be slow.', true);
         // Don't show error in the UI for timeouts, just a status message
+        
+        // Increment network error count for timeouts
+        networkErrorCount++;
       } else if (!navigator.onLine) {
         setStatus('Network is offline. Please check your internet connection.', true);
         translatedTextDiv.textContent = '[Network Error - Please check your connection]';
-      } else if (error.message.includes('NetworkError') || error.message.includes('network') || 
-                 error.message.includes('Failed to fetch')) {
-        // Handle network errors more gracefully
-        setStatus('Network error during translation. Retrying...', true);
+        
+        // Increment network error counter for offline errors
+        networkErrorCount++;
+      } else if (isConnectionResetError(error)) {
+        // Handle connection reset errors more gracefully
+        setStatus('Network connection interrupted. Reconnecting...', true);
         networkErrorCount++;
         
-        // Only after several network errors, try to check the connection
-        if (networkErrorCount > 2) {
-          console.log('Multiple network errors detected, checking VPN/network status');
-          setTimeout(() => checkVpnConnection(), 1000);
+        // If it's a final translation that's important, cache the source text to try again later
+        if (isFinal) {
+          pendingRetries.push({ text, sourceLanguage: selectedSourceLanguage, targetLanguage: selectedTargetLanguage });
         }
       } else {
         // For non-network errors, show the specific error
         setStatus(`Translation error: ${error.message}`, true);
         translatedTextDiv.textContent = `[Translation Error: ${error.message}]`;
+      }
+      
+      // Only after several network errors, try to check the connection
+      if (networkErrorCount > 2) {
+        console.log('Multiple network errors detected, checking network status');
+        setTimeout(() => checkNetworkConnection(), 1000);
       }
     } finally {
       // Always reset the translation state
@@ -1074,58 +1129,100 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Modify init function to add mobile optimizations
   function init() {
-    // Add browser compatibility class to body
-    document.body.classList.add(`browser-${browserInfo.browser.toLowerCase()}`);
-    if (browserInfo.isMobile) {
-      document.body.classList.add('mobile-device');
+    try {
+      // Initialize languages
+      initializeLanguages();
       
-      // Mobile-specific optimizations
+      // Set initial toggle state based on localStorage
+      const savedToggleState = safeLocalStorageGetItem('translatorActive', 'true');
+      isTranslatorActive = savedToggleState === 'true';
+      translatorToggle.checked = isTranslatorActive;
+      updateToggleLabel();
+      
+      // Setup mobile-specific optimizations
       setupMobileOptimizations();
+      
+      // Setup event listeners
+      translatorToggle.addEventListener('change', () => {
+        isTranslatorActive = translatorToggle.checked;
+        safeLocalStorageSetItem('translatorActive', isTranslatorActive.toString());
+        updateToggleLabel();
+        
+        if (isTranslatorActive) {
+          startRecognition();
+        } else {
+          stopRecognition();
+        }
+      });
+      
+      sourceLanguageSelect.addEventListener('change', () => {
+        selectedSourceLanguage = sourceLanguageSelect.value;
+        safeLocalStorageSetItem('sourceLanguage', selectedSourceLanguage);
+        
+        // Update recognition language
+        updateRecognitionLanguage();
+      });
+      
+      targetLanguageSelect.addEventListener('change', () => {
+        selectedTargetLanguage = targetLanguageSelect.value;
+        safeLocalStorageSetItem('targetLanguage', selectedTargetLanguage);
+        
+        // Clear translation cache when target language changes
+        partialTranslationCache = {};
+        translatedTextDiv.textContent = '';
+      });
+      
+      switchLanguagesBtn.addEventListener('click', () => {
+        const tempLang = selectedSourceLanguage;
+        selectedSourceLanguage = selectedTargetLanguage;
+        selectedTargetLanguage = tempLang;
+        
+        sourceLanguageSelect.value = selectedSourceLanguage;
+        targetLanguageSelect.value = selectedTargetLanguage;
+        
+        safeLocalStorageSetItem('sourceLanguage', selectedSourceLanguage);
+        safeLocalStorageSetItem('targetLanguage', selectedTargetLanguage);
+        
+        // Update recognition language
+        updateRecognitionLanguage();
+        
+        // Clear translation cache when languages swap
+        partialTranslationCache = {};
+        
+        // Swap content
+        const tempText = sourceTextDiv.textContent;
+        sourceTextDiv.textContent = translatedTextDiv.textContent;
+        translatedTextDiv.textContent = tempText;
+      });
+      
+      copyButton.addEventListener('click', copyTranslations);
+      
+      // Auto-start if active
+      if (isTranslatorActive) {
+        startRecognition();
+      }
+      
+      // Setup heartbeat to keep connection alive
+      startHeartbeat();
+      
+      // Setup network monitoring
+      setupNetworkMonitoring();
+      
+      // Initial network check
+      checkNetworkConnection().catch(error => {
+        console.error('Initial network check failed:', error);
+      });
+    } catch (error) {
+      console.error('Error initializing app:', error);
+      setStatus('Error initializing: ' + error.message, true);
     }
     
-    // Initialize languages
-    initializeLanguages();
-    updateToggleLabel();
-    
-    // Add styles for VPN warning
-    const style = document.createElement('style');
-    style.textContent = `
-      .vpn-warning {
-        background-color: #fff3cd;
-        color: #856404;
-        padding: 12px 16px;
-        border-radius: 5px;
-        margin-bottom: 15px;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        flex-wrap: wrap;
-      }
-      
-      .vpn-warning.success {
-        background-color: #d4edda;
-        color: #155724;
-      }
-      
-      .vpn-warning.error {
-        background-color: #f8d7da;
-        color: #721c24;
-      }
-      
-      .vpn-warning-message {
-        margin-right: 10px;
-        flex: 1;
-      }
-    `;
-    document.head.appendChild(style);
-    
-    // Handle localStorage storage errors
     function safeLocalStorageGetItem(key, defaultValue) {
       try {
         const value = localStorage.getItem(key);
         return value !== null ? value : defaultValue;
-      } catch (e) {
-        console.error('Error accessing localStorage:', e);
+      } catch (error) {
+        console.error('Error reading from localStorage:', error);
         return defaultValue;
       }
     }
@@ -1133,84 +1230,85 @@ document.addEventListener('DOMContentLoaded', () => {
     function safeLocalStorageSetItem(key, value) {
       try {
         localStorage.setItem(key, value);
-        return true;
-      } catch (e) {
-        console.error('Error writing to localStorage:', e);
-        return false;
+      } catch (error) {
+        console.error('Error writing to localStorage:', error);
       }
     }
     
-    // Replace localStorage usage with safe versions
-    window.safeStorage = {
-      getItem: safeLocalStorageGetItem,
-      setItem: safeLocalStorageSetItem
-    };
-    
-    // Ensure interface is usable without recognition
-    if (!hasSpeechRecognition && !hasMediaRecorder) {
-      setStatus('Your browser does not support speech recognition or audio recording. Please try a different browser like Chrome, Edge, or Firefox.', true);
-      translatorToggle.checked = false;
-      isTranslatorActive = false;
-      updateToggleLabel();
-    }
-    
-    // Check VPN connection on startup
-    checkVpnConnection().then(isConnected => {
-      // Start recognition if active and VPN is connected
-      if (isTranslatorActive && isConnected) {
-        startRecognition();
-      }
-    });
-    
-    // Implement a heartbeat mechanism to maintain activity
-    let heartbeatInterval = null;
-    
+    // Function to setup heartbeat to keep server connection alive
     function startHeartbeat() {
-      if (heartbeatInterval) clearInterval(heartbeatInterval);
-      
-      // Check every 30 seconds if recognition is still active
-      heartbeatInterval = setInterval(() => {
+      // Send a ping every 30 seconds to keep connections alive
+      setInterval(() => {
         if (isTranslatorActive) {
-          // If recognition is supposed to be active but isn't, restart it
-          if (!isRecording && !isDirectAudioRecording) {
-            console.log('Heartbeat: Recognition should be active but isn\'t. Restarting...');
-            startRecognition();
-          }
+          // Only send heartbeat if translator is active
+          fetch('/api/heartbeat', { method: 'HEAD' }).catch(error => {
+            console.log('Heartbeat error:', error);
+            // Don't show errors to the user for heartbeats
+          });
         }
       }, 30000);
     }
     
-    // Start heartbeat
-    startHeartbeat();
-    
-    // Add visibility change listener to handle page becoming active/inactive
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') {
-        console.log('Page became visible, checking recognition status');
+    // Function to monitor network status changes
+    function setupNetworkMonitoring() {
+      // Listen for online status changes
+      window.addEventListener('online', () => {
+        console.log('Browser reports online status');
+        setStatus('Network connection restored', false);
         
-        // When page becomes visible, restart recognition if it should be active
-        if (isTranslatorActive && !isRecording && !isDirectAudioRecording) {
-          console.log('Restarting recognition after visibility change');
-          startRecognition();
-        }
-      }
-    });
-    
-    // Add global handling for network connectivity changes
-    window.addEventListener('online', () => {
-      console.log('Network connection restored');
-      // Check VPN connection on network restoration
-      checkVpnConnection().then(isConnected => {
-        if (isConnected && isTranslatorActive) {
-          startRecognition();
-        }
+        // Check the actual connection to our backend
+        setTimeout(() => {
+          if (isTranslatorActive) {
+            checkNetworkConnection().then(isConnected => {
+              if (isConnected) {
+                // Reset network error counter on confirmed connection
+                networkErrorCount = 0;
+                
+                // If previously had errors, restart recognition
+                if (!isRecording && !isDirectAudioRecording) {
+                  console.log('Network recovered, restarting recognition');
+                  startRecognition();
+                }
+                
+                // Process any pending retry translations
+                if (pendingRetries.length > 0) {
+                  processPendingRetries();
+                }
+              }
+            });
+          }
+        }, 1000);
       });
-    });
-    
-    window.addEventListener('offline', () => {
-      console.log('Network connection lost');
-      setStatus('Network connection lost. Waiting for connection...', true);
-    });
+      
+      // Listen for offline status changes
+      window.addEventListener('offline', () => {
+        console.log('Browser reports offline status');
+        setStatus('Network connection lost. Waiting for reconnection...', true);
+        networkErrorCount++; // Increment the error counter
+      });
+      
+      // Setup a periodic connection check
+      setInterval(() => {
+        // Only check if we're active and have accumulated some network errors
+        if (isTranslatorActive && networkErrorCount > 0) {
+          console.log('Performing periodic network check due to previous errors');
+          checkNetworkConnection().then(isConnected => {
+            if (isConnected) {
+              // Reset error counter
+              networkErrorCount = 0;
+              
+              // Restart recognition if needed
+              if (!isRecording && !isDirectAudioRecording) {
+                console.log('Network recovered, restarting recognition');
+                startRecognition();
+              }
+            }
+          }).catch(error => {
+            console.error('Periodic network check failed:', error);
+          });
+        }
+      }, 60000); // Check every minute when there are errors
+    }
   }
   
   // Setup mobile-specific optimizations
@@ -1431,44 +1529,73 @@ document.addEventListener('DOMContentLoaded', () => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 20000); // Increase to 20 second timeout
       
+      // Local retry for connection resets
+      let localRetryCount = 0;
+      const maxLocalRetries = 2;
+      
+      async function makeTranscriptionRequest() {
+        try {
+          const response = await fetch('/api/transcribe', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              audioData: base64Data,
+              sourceLanguage
+            }),
+            signal: controller.signal
+          });
+
+          if (!response.ok) {
+            // Parse the error with better error handling
+            const errorText = await response.text();
+            let errorData = { error: 'Unknown error' };
+            
+            try {
+              errorData = JSON.parse(errorText);
+            } catch (parseError) {
+              console.error('Failed to parse error response:', parseError);
+            }
+            
+            const error = new Error(errorData.error || 'Transcription failed');
+            // Add additional info to the error
+            error.isNetworkError = errorData.isNetworkError;
+            error.retriedCount = errorData.retriedCount;
+            
+            throw error;
+          }
+          
+          return await response.json();
+        } catch (error) {
+          // Check for connection reset errors that can be retried locally
+          if (isConnectionResetError(error) && localRetryCount < maxLocalRetries) {
+            localRetryCount++;
+            const delay = 1000 * Math.pow(1.5, localRetryCount);
+            console.log(`Connection reset during transcription, local retry ${localRetryCount}/${maxLocalRetries} after ${delay}ms`);
+            
+            // Wait and retry
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return makeTranscriptionRequest(); // Recursive retry
+          }
+          
+          // Otherwise rethrow
+          throw error;
+        }
+      }
+      
       try {
-        // Make the API request with retry logic
-        const response = await fetchWithRetry('https://api.openai.com/v1/audio/transcriptions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`
-          },
-          body: formData,
-          signal: controller.signal
-        }, 2);  // Allow 2 retries
-        
+        // Make the transcription request with built-in retries
+        const data = await makeTranscriptionRequest();
         clearTimeout(timeoutId);
         
-        if (!response.ok) {
-          // Use a better parsing approach to handle error responses
-          const errorText = await response.text();
-          let errorData = { error: { message: 'Unknown error' } };
-          
-          try {
-            errorData = JSON.parse(errorText);
-          } catch (parseError) {
-            console.error('Failed to parse error response:', parseError);
-          }
-          
-          // Check for specific error types
-          if (response.status === 401) {
-            throw new Error('API authentication failed. Please check your API key.');
-          } else if (response.status === 429) {
-            throw new Error('Rate limit exceeded. Please try again later.');
-          } else if (response.status >= 500) {
-            throw new Error('OpenAI service is currently experiencing issues. Please try again later.');
-          } else {
-            throw new Error(errorData.error?.message || 'Transcription failed');
-          }
-        }
-        
-        const data = await response.json();
         let transcribedText = data.text || '';
+        
+        // Reset network error count on successful transcription
+        if (networkErrorCount > 0) {
+          networkErrorCount = 0;
+          console.log('Reset network error count after successful transcription');
+        }
         
         // For mobile devices, get a meaningful transcription by using both the previous text and new text
         if (browserInfo.isMobile) {
@@ -1501,51 +1628,36 @@ document.addEventListener('DOMContentLoaded', () => {
         // Show a more user-friendly error message
         if (error.name === 'AbortError') {
           setStatus('Transcription request timed out. Your network may be slow.', true);
+          networkErrorCount++;
         } else if (!navigator.onLine) {
           setStatus('Network is offline. Please check your internet connection.', true);
+          networkErrorCount++;
+        } else if (isConnectionResetError(error)) {
+          // For connection reset errors, show a message but try to continue
+          setStatus('Network interrupted. Reconnecting...', true);
+          networkErrorCount++;
+          
+          // Keep existing text for connection issues
+          if (existingText) {
+            return existingText.trim();
+          }
         } else {
           // Only show error if it's not just a network glitch
           setStatus('Transcription error: ' + error.message, true);
         }
         
-        // Check for network errors and run the VPN check if needed
-        if (error.message.includes('NetworkError') || error.message.includes('network') || 
-            error.name === 'AbortError' || !navigator.onLine) {
-          networkErrorCount++;
-          
-          // After several network errors, try to check the VPN/network status
+        // Check for network errors and run the status check if needed
+        if (isConnectionResetError(error) || error.name === 'AbortError' || !navigator.onLine) {
+          // After several network errors, try to check the network status
           if (networkErrorCount > 2) {
             console.log('Multiple network errors detected, checking network status');
             setTimeout(() => checkNetworkConnection(), 1000);
           }
         }
         
-        // Only after network errors, try to check if system is online at all
-        if (init && networkErrorCount > 3) {
-          // Trigger a recheck of the connection status
-          checkNetworkConnection().then(isConnected => {
-            if (isConnected) {
-              setStatus('Network connection restored. Restarting translator...');
-              setTimeout(() => {
-                if (isTranslatorActive) {
-                  startRecognition();
-                }
-              }, 1000);
-            }
-          }).catch(error => {
-            console.error('Error rechecking connection:', error);
-          });
-        }
-        
-        // Automatically check network connection if selected
-        if (autoNetworkCheck) {
-          checkNetworkConnection().then(isConnected => {
-            if (isConnected && isTranslatorActive) {
-              console.log('Network check passed, resuming translation');
-              setStatus('Network check passed, resuming translation');
-              startRecognition();
-            }
-          });
+        // For connection errors, return existing text if available
+        if (existingText && (isConnectionResetError(error) || error.name === 'AbortError')) {
+          return existingText.trim();
         }
         
         throw error;
@@ -2397,4 +2509,57 @@ document.addEventListener('DOMContentLoaded', () => {
       return false;
     }
   }
+
+  // Function to process pending retries for failed translations
+  function processPendingRetries() {
+    if (pendingRetries.length === 0 || isTranslationInProgress) {
+      return;
+    }
+    
+    // Only process retries if we have a stable connection
+    if (navigator.onLine && networkErrorCount === 0) {
+      console.log(`Processing ${pendingRetries.length} pending translation retries`);
+      
+      // Take the first pending retry
+      const retry = pendingRetries.shift();
+      
+      // Store the original source and target languages
+      const originalSourceLang = selectedSourceLanguage;
+      const originalTargetLang = selectedTargetLanguage;
+      
+      // Set the languages for this retry
+      if (retry.sourceLanguage) selectedSourceLanguage = retry.sourceLanguage;
+      if (retry.targetLanguage) selectedTargetLanguage = retry.targetLanguage;
+      
+      // Try translating again
+      translateText(retry.text, true).then(() => {
+        console.log('Retry translation succeeded');
+        
+        // Schedule next retry if there are more
+        if (pendingRetries.length > 0) {
+          setTimeout(processPendingRetries, 2000);
+        }
+      }).catch(error => {
+        console.error('Retry translation failed:', error);
+        
+        // If it still fails but doesn't seem like a connection issue, remove it
+        if (!isConnectionResetError(error)) {
+          console.log('Non-connection error during retry, not adding back to queue');
+        } else {
+          // Otherwise put it back at the end of the queue
+          pendingRetries.push(retry);
+        }
+      }).finally(() => {
+        // Restore original languages
+        selectedSourceLanguage = originalSourceLang;
+        selectedTargetLanguage = originalTargetLang;
+      });
+    } else {
+      // If connection doesn't seem stable, wait longer before trying
+      setTimeout(processPendingRetries, 10000);
+    }
+  }
+  
+  // Start a timer to process pending retries periodically
+  setInterval(processPendingRetries, 15000);
 }); 
