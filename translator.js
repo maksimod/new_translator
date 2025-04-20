@@ -15,16 +15,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const copyButton = document.getElementById('copyButton');
   const statusElement = document.getElementById('status');
 
-  // Добавим сообщение о необходимости VPN
-  const vpnWarningContainer = document.createElement('div');
-  vpnWarningContainer.className = 'vpn-warning';
-  vpnWarningContainer.innerHTML = `
+  // Add network status indicator
+  const networkStatusContainer = document.createElement('div');
+  networkStatusContainer.className = 'vpn-warning'; // Keep same class for styling
+  networkStatusContainer.innerHTML = `
     <div class="vpn-warning-message">
-      <strong>VPN Required!</strong> This application requires a VPN connection to work properly.
+      <strong>Network Check</strong> The translator requires a stable internet connection.
     </div>
-    <button id="checkVpnBtn" class="check-vpn-btn">Check VPN Connection</button>
+    <button id="checkVpnBtn" class="check-vpn-btn">Check Connection</button>
   `;
-  document.querySelector('.controls').appendChild(vpnWarningContainer);
+  document.querySelector('.controls').appendChild(networkStatusContainer);
   const checkVpnBtn = document.getElementById('checkVpnBtn');
 
   // State variables
@@ -49,6 +49,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let pendingTranslations = [];
   let isProcessingIterative = false;
   let isVpnConnected = false; // Tracking VPN connection status
+  let networkErrorCount = 0; // Track consecutive network errors for backoff
   
   // Add direct audio recording functionality
   let mediaRecorder = null;
@@ -329,12 +330,45 @@ document.addEventListener('DOMContentLoaded', () => {
           translatorToggle.checked = false;
           updateToggleLabel();
         } else if (event.error === 'network') {
-          // Don't show network errors to avoid alarming users
-          console.log('Network error occurred, restarting recognition');
+          // Handle network errors with better recovery
+          console.log('Network error occurred in recognition');
           
-          // Always restart immediately after network error
+          // Don't show the network error to user unless it's persistent
+          if (!ignoreNextNetworkError) {
+            // Only show status message, don't display error UI
+            setStatus('Network connection unstable, attempting to reconnect...', false);
+            
+            // Try to check the actual network status
+            if (navigator.onLine === false) {
+              setStatus('Network is offline. Please check your internet connection.', true);
+            }
+          }
+          
+          // Reset the ignore flag after using it
+          ignoreNextNetworkError = false;
+          
+          // Always restart with exponential backoff after network error
           if (isTranslatorActive && !isRecording) {
-            setTimeout(() => startRealRecognition(), 500);
+            // Use a progressive backoff starting with a small delay
+            const backoffDelay = Math.min(2000, 500 * Math.pow(1.5, networkErrorCount));
+            networkErrorCount++; // Increment error counter for backoff calculation
+            
+            console.log(`Restarting recognition after network error with ${backoffDelay}ms delay`);
+            setTimeout(() => {
+              if (isTranslatorActive) {
+                // If we've had too many network errors, try the direct audio recording instead
+                if (networkErrorCount > 3 && hasMediaRecorder) {
+                  console.log('Too many network errors, switching to direct audio recording');
+                  setStatus('Switching to more reliable recording method', false);
+                  startDirectAudioRecording();
+                  
+                  // Reset network error count after switching methods
+                  networkErrorCount = 0;
+                } else {
+                  startRealRecognition();
+                }
+              }
+            }, backoffDelay);
           }
         } else if (event.error === 'aborted') {
           // Handle aborted errors differently
@@ -368,6 +402,11 @@ document.addEventListener('DOMContentLoaded', () => {
         // Update the first recognition flag
         if (isFirstRecognition && transcript.trim() !== '') {
           isFirstRecognition = false;
+        }
+        
+        // Reset network error count on successful results
+        if (networkErrorCount > 0) {
+          networkErrorCount = 0;
         }
         
         // Ignore very short transcripts (likely noise)
@@ -446,52 +485,97 @@ document.addEventListener('DOMContentLoaded', () => {
       ignoreNextNetworkError = true;
       
       // If recognition is already running, stop it first
-      if (recognition.state === 'running') {
+      if (recognition && (typeof recognition.state !== 'undefined' && recognition.state === 'running' || isRecording)) {
         console.log('Recognition is already running, stopping it first');
-        recognition.stop();
-        // Short timeout before restarting
-        setTimeout(() => {
-          if (isTranslatorActive) {
-            startRealRecognition();
-          }
-        }, 300);
+        try {
+          recognition.stop();
+          // Short timeout before restarting
+          setTimeout(() => {
+            if (isTranslatorActive) {
+              console.log('Restarting recognition after stopping previous instance');
+              try {
+                recognition.start();
+              } catch (delayedStartError) {
+                console.error('Error during delayed recognition start:', delayedStartError);
+                // Recreation approach for persistent errors
+                if (delayedStartError.name === 'InvalidStateError') {
+                  console.log('Recognition in invalid state, recreating...');
+                  recognition = null;
+                  setupSpeechRecognition();
+                }
+              }
+            }
+          }, 300);
+        } catch (stopError) {
+          console.error('Error stopping recognition:', stopError);
+          // If we can't stop it cleanly, recreate it
+          recognition = null;
+          setTimeout(() => {
+            if (isTranslatorActive) {
+              setupSpeechRecognition();
+            }
+          }, 500);
+        }
         return;
       }
       
+      // If recognition doesn't exist, create it
+      if (!recognition) {
+        console.log('No recognition object exists, creating new one');
+        setupSpeechRecognition();
+        return; // setupSpeechRecognition will handle starting
+      }
+      
       console.log('Starting real recognition...');
+      setStatus('Starting listening...');
       recognition.start();
+      
+      // Reset network error count on successful start
+      if (networkErrorCount > 0) {
+        console.log('Resetting network error count after successful recognition start');
+        networkErrorCount = 0;
+      }
     } catch (error) {
       console.error('Error starting real recognition:', error);
       
-      if (error.message && error.message.includes('already started')) {
-        // Recognition is already running, stop it and restart
-        try {
-          recognition.stop();
+      if (error.name === 'InvalidStateError' || (error.message && error.message.includes('already started'))) {
+        // Recognition is in a bad state, recreate it
+        console.log('Recognition in invalid state, recreating object');
+        recognition = null;
+        
+        setTimeout(() => {
+          if (isTranslatorActive) {
+            setupSpeechRecognition();
+          }
+        }, 500);
+      } else {
+        // For network or other errors, try direct audio recording as a fallback
+        if (hasMediaRecorder && networkErrorCount > 2) {
+          console.log('Multiple recognition errors, switching to direct audio recording');
+          setStatus('Speech recognition unstable. Switching to audio recording.', true);
+          startDirectAudioRecording();
+        } else {
+          // For other errors or first network errors, retry after a delay
+          networkErrorCount++;
+          const backoffDelay = Math.min(2000, 500 * Math.pow(1.5, networkErrorCount));
+          
+          console.log(`Retrying recognition after error with ${backoffDelay}ms delay`);
           setTimeout(() => {
             if (isTranslatorActive) {
               startRealRecognition();
             }
-          }, 500);
-        } catch (stopError) {
-          console.error('Error stopping recognition:', stopError);
+          }, backoffDelay);
         }
-      } else {
-        // For other errors, retry after a delay
-        setTimeout(() => {
-          if (isTranslatorActive) {
-            startRealRecognition();
-          }
-        }, 1000);
       }
     }
   }
   
   // Start recognition process
   function startRecognition() {
-    // Check VPN first before starting
-    checkVpnConnection().then(isConnected => {
+    // Check network connection first before starting
+    checkNetworkConnection().then(isConnected => {
       if (isConnected) {
-        // If VPN is connected, proceed with recognition
+        // If connected, proceed with recognition
         
         // Reset any error states
         sourceTextDiv.classList.remove('error');
@@ -530,13 +614,13 @@ document.addEventListener('DOMContentLoaded', () => {
         // Add visual feedback that recording is active
         document.body.classList.add('is-recording');
       } else {
-        // If VPN is not connected, show warning
-        setStatus('VPN required! Please connect to VPN before using the translator.', true);
+        // If not connected, show warning
+        setStatus('Network connection required! Please check your connection before using the translator.', true);
         document.body.classList.remove('is-recording');
       }
     }).catch(error => {
-      console.error('Error checking VPN connection:', error);
-      setStatus('Error checking VPN connection. Please try again.', true);
+      console.error('Error checking network connection:', error);
+      setStatus('Error checking network connection. Please try again.', true);
     });
   }
   
@@ -727,185 +811,115 @@ document.addEventListener('DOMContentLoaded', () => {
     if (partialTranslationCache[text]) {
       console.log('Using cached translation');
       translatedTextDiv.textContent = partialTranslationCache[text];
-      
-      if (isFinal) {
-        addTranslationToHistory(partialTranslationCache[text]);
-      }
-      
       return;
     }
     
+    // Show that translation is in progress
+    isTranslationInProgress = true;
+    
     try {
-      // Only set translation in progress for final translations
-      if (isFinal) {
-        isTranslationInProgress = true;
-      }
+      // Set loading state visual feedback
+      sourceTextDiv.classList.add('translating');
+      translatedTextDiv.classList.add('translating');
       
-      setStatus('Translating...');
-      
-      // Store this text as the last processed transcript
-      lastProcessedTranscript = text;
-      
-      // Add delay before making next API call to avoid rate limiting
-      if (Date.now() - lastTranslationTime < 750) {
-        await new Promise(resolve => setTimeout(resolve, 750));
-      }
-      
-      // If no longer the latest translation request, abort
-      if (!isLatestTranslation && !isFinal) {
-        console.log('Aborting outdated translation request');
-        return;
-      }
-      
-      // Mobile devices get longer timeout
-      const timeoutDuration = browserInfo.isMobile ? 20000 : 15000;
-      
-      // Always use direct OpenAI API call
-      const apiKey = getApiKey();
-      
-      // Setup request with timeout
+      // Add a timeout controller to prevent hanging requests
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutDuration);
+      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
       
-      const requestOptions = {
+      const response = await fetchWithRetry('/api/translate', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: "gpt-3.5-turbo-0125",
-          messages: [
-            {
-              role: "system",
-              content: `You are a translator from ${getLanguageName(selectedSourceLanguage)} to ${getLanguageName(selectedTargetLanguage)}. Translate the following text accurately and naturally, preserving the meaning and tone of the original text. ${browserInfo.isMobile ? 'Ensure you translate the COMPLETE text, not just the first few words.' : ''}`
-            },
-            {
-              role: "user",
-              content: text
-            }
-          ],
-          temperature: 0.3,
-          max_tokens: 500
+          text: text,
+          sourceLanguage: selectedSourceLanguage,
+          targetLanguage: selectedTargetLanguage
         }),
         signal: controller.signal
-      };
+      }, 2); // Allow 2 retries
       
-      try {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', requestOptions);
-        clearTimeout(timeoutId);
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        // Parse the error with better error handling
+        const errorText = await response.text();
+        let errorData = { error: 'Unknown error' };
         
-        // If no longer the latest translation request, abort
-        if (!isLatestTranslation && !isFinal) {
-          console.log('Aborting outdated translation response processing');
-          return;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch (e) {
+          console.error('Failed to parse error response:', e);
         }
         
-        if (!response.ok) {
-          const errorData = await response.json();
-          if (errorData.error && errorData.error.code === 'unsupported_country_region_territory') {
-            await checkVpnConnection(); // Re-check VPN status
-            throw new Error('Your location is not supported. Please use VPN to connect from a supported region');
-          } else if (response.status === 429) {
-            throw new Error('Rate limit exceeded. Please try again in a moment.');
-          } else {
-            throw new Error(errorData.error?.message || 'Translation failed');
-          }
-        }
-        
-        const data = await response.json();
-        const translation = data.choices[0].message.content;
-        
-        // If no longer the latest translation request, abort
-        if (!isLatestTranslation && !isFinal) {
-          console.log('Discarding outdated translation result');
-          return;
-        }
-        
-        // Mobile validation - check if translation seems too short compared to input
-        if (browserInfo.isMobile && translation) {
-          const inputWordCount = text.split(/\s+/).length;
-          const translationWordCount = translation.split(/\s+/).length;
-          
-          // If translation seems too short, log warning
-          if (inputWordCount > 3 && translationWordCount === 1) {
-            console.warn('Mobile: Translation suspiciously short, may be incomplete', {
-              input: text,
-              inputWords: inputWordCount,
-              translation: translation,
-              translationWords: translationWordCount
-            });
-            
-            // Try to use cached translation if it's longer
-            const cachedTranslation = translationHistory[translationHistory.length - 1];
-            if (cachedTranslation && cachedTranslation.split(/\s+/).length > translationWordCount) {
-              console.log('Mobile: Using previous longer translation instead');
-              return cachedTranslation;
-            }
-          }
-        }
-        
-        // Check for duplicate or very similar translation to what's already displayed
-        if (translatedTextDiv.textContent) {
-          const currentTranslation = translatedTextDiv.textContent;
-          const distance = levenshteinDistance(currentTranslation, translation);
-          const maxLength = Math.max(currentTranslation.length, translation.length);
-          const similarityPercentage = 100 - (distance / maxLength * 100);
-          
-          if (similarityPercentage > 90) {
-            console.log('New translation very similar to current display, not updating UI', {
-              similarity: similarityPercentage.toFixed(2) + '%'
-            });
-            
-            // Still cache it but don't update UI if it's almost identical
-            partialTranslationCache[text] = translation;
-            return translation;
-          }
-        }
+        throw new Error(errorData.error || 'Translation failed');
+      }
+      
+      const data = await response.json();
+      
+      // Clear loading state
+      sourceTextDiv.classList.remove('translating');
+      translatedTextDiv.classList.remove('translating');
+      
+      // Update the translation only if this is the most recent request
+      if (isLatestTranslation || isFinal) {
+        translatedTextDiv.textContent = data.translation || '';
         
         // Cache the translation
-        partialTranslationCache[text] = translation;
+        partialTranslationCache[text] = data.translation;
         
-        // Update the translated text
-        translatedTextDiv.textContent = translation;
+        // Reset error state if successful
+        sourceTextDiv.classList.remove('error');
+        translatedTextDiv.classList.remove('error');
         
-        // If this is a final translation, add it to the history
-        if (isFinal) {
-          addTranslationToHistory(translation);
+        // Add to history if it's a final translation
+        if (isFinal && data.translation) {
+          addTranslationToHistory(data.translation);
         }
         
-        setStatus('Translation complete');
-        return translation;
-      } catch (fetchError) {
-        // Handle AbortController timeout
-        if (fetchError.name === 'AbortError') {
-          throw new Error('Translation request timed out. Please try again.');
-        }
-        throw fetchError;
+        // Success status
+        const sourceLang = getLanguageName(selectedSourceLanguage);
+        const targetLang = getLanguageName(selectedTargetLanguage);
+        const statusMessage = `${sourceLang} → ${targetLang}: Translation complete`;
+        setStatus(statusMessage);
       }
     } catch (error) {
       console.error('Translation error:', error);
       
-      // Don't show API errors for non-final translations
-      if (isFinal) {
-        setStatus(`Translation error: ${error.message}`, true);
+      // Clear loading state
+      sourceTextDiv.classList.remove('translating');
+      translatedTextDiv.classList.remove('translating');
+      
+      // Add error state
+      sourceTextDiv.classList.add('error');
+      translatedTextDiv.classList.add('error');
+      
+      // Check for network errors vs other errors
+      if (error.name === 'AbortError') {
+        setStatus('Translation request timed out. Your network may be slow.', true);
+        // Don't show error in the UI for timeouts, just a status message
+      } else if (!navigator.onLine) {
+        setStatus('Network is offline. Please check your internet connection.', true);
+        translatedTextDiv.textContent = '[Network Error - Please check your connection]';
+      } else if (error.message.includes('NetworkError') || error.message.includes('network') || 
+                 error.message.includes('Failed to fetch')) {
+        // Handle network errors more gracefully
+        setStatus('Network error during translation. Retrying...', true);
+        networkErrorCount++;
         
-        if (error.message.includes('location is not supported')) {
-          // Show prominent VPN warning
-          document.querySelector('.vpn-warning').classList.remove('success');
-          document.querySelector('.vpn-warning').classList.add('error');
-          document.querySelector('.vpn-warning-message').innerHTML = 
-            '<strong>VPN Required!</strong> Your location is not supported. Please connect to VPN from a supported region.';
+        // Only after several network errors, try to check the connection
+        if (networkErrorCount > 2) {
+          console.log('Multiple network errors detected, checking VPN/network status');
+          setTimeout(() => checkVpnConnection(), 1000);
         }
       } else {
-        console.log('Ignoring error for non-final translation');
+        // For non-network errors, show the specific error
+        setStatus(`Translation error: ${error.message}`, true);
+        translatedTextDiv.textContent = `[Translation Error: ${error.message}]`;
       }
-      
-      return null;
     } finally {
-      if (isFinal) {
-        isTranslationInProgress = false;
-      }
+      // Always reset the translation state
+      isTranslationInProgress = false;
     }
   }
 
@@ -1309,6 +1323,43 @@ document.addEventListener('DOMContentLoaded', () => {
   // Start the app
   init();
 
+  // Add a new function to try calling the backend with retries
+  async function fetchWithRetry(url, options, maxRetries = 3) {
+    let retryCount = 0;
+    let lastError = null;
+    
+    while (retryCount < maxRetries) {
+      try {
+        return await fetch(url, options);
+      } catch (error) {
+        lastError = error;
+        console.log(`Fetch attempt ${retryCount + 1} failed:`, error);
+        
+        // Check if we're offline
+        if (!navigator.onLine) {
+          console.error('Device appears to be offline');
+          throw new Error('Network is offline. Please check your internet connection.');
+        }
+        
+        // Only retry certain kinds of errors
+        if (error.name === 'AbortError' || error.message.includes('NetworkError') || 
+            error.message.includes('network') || error.message.includes('timeout')) {
+          // Exponential backoff
+          const delay = Math.min(3000, 1000 * Math.pow(1.5, retryCount));
+          console.log(`Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          retryCount++;
+        } else {
+          // Don't retry other types of errors
+          throw error;
+        }
+      }
+    }
+    
+    // If we exhausted retries, throw the last error
+    throw lastError || new Error('Network request failed after multiple retries');
+  }
+
   // Add a new function to process audio directly with OpenAI API
   async function processAudioDirectly(audioData, sourceLanguage) {
     try {
@@ -1354,6 +1405,12 @@ document.addEventListener('DOMContentLoaded', () => {
       
       const blob = new Blob(byteArrays, { type: mimeType });
       
+      // Skip very small audio files that are likely just noise
+      if (blob.size < 1000) {
+        console.log('Audio blob too small, likely just noise', blob.size);
+        return '';
+      }
+      
       // Create form data
       const formData = new FormData();
       formData.append('file', blob, 'audio.webm');
@@ -1370,54 +1427,129 @@ document.addEventListener('DOMContentLoaded', () => {
       
       const apiKey = getApiKey();
       
-      // Add timeout for mobile devices
+      // Add timeout 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 20000); // Increase to 20 second timeout
       
-      // Make the API request
-      const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: formData,
-        signal: controller.signal
-      });
-      
-      clearTimeout(timeoutId);
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error?.message || 'Transcription failed');
-      }
-      
-      const data = await response.json();
-      let transcribedText = data.text || '';
-      
-      // For mobile devices, get a meaningful transcription by using both the previous text and new text
-      if (browserInfo.isMobile) {
-        // If we have meaningful new text
-        if (transcribedText && transcribedText.trim().length > 5) {
-          // If the new text doesn't seem to be a continuation, keep it as is
-          if (existingText && !transcribedText.startsWith(existingText.trim())) {
-            // Append only if not already starting with existing text
-            console.log('Mobile: New complete transcription detected');
-            return transcribedText;
-          } else if (existingText) {
-            // If new text is a subset of existing text, return combined text
-            if (existingText.includes(transcribedText)) {
-              console.log('Mobile: Using existing text as it contains new text');
-              return existingText.trim();
-            }
+      try {
+        // Make the API request with retry logic
+        const response = await fetchWithRetry('https://api.openai.com/v1/audio/transcriptions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: formData,
+          signal: controller.signal
+        }, 2);  // Allow 2 retries
+        
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          // Use a better parsing approach to handle error responses
+          const errorText = await response.text();
+          let errorData = { error: { message: 'Unknown error' } };
+          
+          try {
+            errorData = JSON.parse(errorText);
+          } catch (parseError) {
+            console.error('Failed to parse error response:', parseError);
           }
-        } else if (existingText && (!transcribedText || transcribedText.trim().length <= 5)) {
-          // If new text is too short but we have existing text, keep the existing text
-          console.log('Mobile: New text too short, keeping existing text');
-          return existingText.trim();
+          
+          // Check for specific error types
+          if (response.status === 401) {
+            throw new Error('API authentication failed. Please check your API key.');
+          } else if (response.status === 429) {
+            throw new Error('Rate limit exceeded. Please try again later.');
+          } else if (response.status >= 500) {
+            throw new Error('OpenAI service is currently experiencing issues. Please try again later.');
+          } else {
+            throw new Error(errorData.error?.message || 'Transcription failed');
+          }
         }
+        
+        const data = await response.json();
+        let transcribedText = data.text || '';
+        
+        // For mobile devices, get a meaningful transcription by using both the previous text and new text
+        if (browserInfo.isMobile) {
+          // If we have meaningful new text
+          if (transcribedText && transcribedText.trim().length > 5) {
+            // If the new text doesn't seem to be a continuation, keep it as is
+            if (existingText && !transcribedText.startsWith(existingText.trim())) {
+              // Append only if not already starting with existing text
+              console.log('Mobile: New complete transcription detected');
+              return transcribedText;
+            } else if (existingText) {
+              // If new text is a subset of existing text, return combined text
+              if (existingText.includes(transcribedText)) {
+                console.log('Mobile: Using existing text as it contains new text');
+                return existingText.trim();
+              }
+            }
+          } else if (existingText && (!transcribedText || transcribedText.trim().length <= 5)) {
+            // If new text is too short but we have existing text, keep the existing text
+            console.log('Mobile: New text too short, keeping existing text');
+            return existingText.trim();
+          }
+        }
+        
+        return transcribedText;
+      } catch (error) {
+        clearTimeout(timeoutId);
+        console.error('Transcription API error:', error);
+        
+        // Show a more user-friendly error message
+        if (error.name === 'AbortError') {
+          setStatus('Transcription request timed out. Your network may be slow.', true);
+        } else if (!navigator.onLine) {
+          setStatus('Network is offline. Please check your internet connection.', true);
+        } else {
+          // Only show error if it's not just a network glitch
+          setStatus('Transcription error: ' + error.message, true);
+        }
+        
+        // Check for network errors and run the VPN check if needed
+        if (error.message.includes('NetworkError') || error.message.includes('network') || 
+            error.name === 'AbortError' || !navigator.onLine) {
+          networkErrorCount++;
+          
+          // After several network errors, try to check the VPN/network status
+          if (networkErrorCount > 2) {
+            console.log('Multiple network errors detected, checking network status');
+            setTimeout(() => checkNetworkConnection(), 1000);
+          }
+        }
+        
+        // Only after network errors, try to check if system is online at all
+        if (init && networkErrorCount > 3) {
+          // Trigger a recheck of the connection status
+          checkNetworkConnection().then(isConnected => {
+            if (isConnected) {
+              setStatus('Network connection restored. Restarting translator...');
+              setTimeout(() => {
+                if (isTranslatorActive) {
+                  startRecognition();
+                }
+              }, 1000);
+            }
+          }).catch(error => {
+            console.error('Error rechecking connection:', error);
+          });
+        }
+        
+        // Automatically check network connection if selected
+        if (autoNetworkCheck) {
+          checkNetworkConnection().then(isConnected => {
+            if (isConnected && isTranslatorActive) {
+              console.log('Network check passed, resuming translation');
+              setStatus('Network check passed, resuming translation');
+              startRecognition();
+            }
+          });
+        }
+        
+        throw error;
       }
-      
-      return transcribedText;
     } catch (error) {
       console.error('Direct transcription error:', error);
       throw error;
@@ -1635,15 +1767,15 @@ document.addEventListener('DOMContentLoaded', () => {
                   
                   if (error.message.includes('location is not supported') || 
                       error.message.includes('Country, region, or territory not supported')) {
-                    // Problem with VPN, update warning message
-                    setStatus('VPN error: Your location is not supported. Please check your VPN connection.', true);
+                    // Problem with network access, update warning message
+                    setStatus('Region error: Access to service is restricted in your region.', true);
                     document.querySelector('.vpn-warning').classList.remove('success');
                     document.querySelector('.vpn-warning').classList.add('error');
                     
                     // Wait a bit before retrying
                     setTimeout(() => {
                       if (isTranslatorActive) {
-                        checkVpnConnection().then(isConnected => {
+                        checkNetworkConnection().then(isConnected => {
                           if (isConnected) {
                             startDirectAudioRecording();
                           }
@@ -1789,23 +1921,86 @@ document.addEventListener('DOMContentLoaded', () => {
       setStatus('Checking VPN connection...');
       const apiKey = getApiKey();
       
+      // First check if basic internet is available
+      if (!navigator.onLine) {
+        console.error('Internet connection unavailable');
+        setStatus('No internet connection. Please check your network settings.', true);
+        
+        document.querySelector('.vpn-warning-message').innerHTML = 
+          '<strong>No Internet!</strong> Please check your internet connection before using the translator.';
+        
+        isVpnConnected = false;
+        document.querySelector('.vpn-warning').classList.remove('success');
+        document.querySelector('.vpn-warning').classList.add('error');
+        return false;
+      }
+      
       // Setup request with timeout
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 15000); // Increase to 15 second timeout
       
       try {
-        // Try a minimal call to OpenAI to check connectivity
-        const response = await fetch('https://api.openai.com/v1/models', {
+        // Try both requests to detect real network issues vs region restrictions
+        
+        // First try a basic connectivity test that doesn't require VPN
+        const connectivityCheck = fetch('https://www.google.com', {
+          method: 'HEAD',
+          signal: controller.signal,
+          mode: 'no-cors' // This allows the request without CORS issues
+        }).then(response => {
+          // No-cors mode doesn't give status, but if it doesn't throw, we have connectivity
+          return true;
+        }).catch(error => {
+          console.error('Basic connectivity check failed:', error);
+          return false;
+        });
+        
+        // Then try the OpenAI API check
+        const openaiCheck = fetch('https://api.openai.com/v1/models', {
           method: 'GET',
           headers: {
             'Authorization': `Bearer ${apiKey}`
           },
           signal: controller.signal
+        }).then(response => {
+          if (response.ok) {
+            return { success: true, status: response.status };
+          } else {
+            return response.json().then(errorData => {
+              return { success: false, status: response.status, error: errorData.error };
+            });
+          }
+        }).catch(error => {
+          console.error('OpenAI API check failed:', error);
+          return { success: false, error: error };
+        });
+        
+        // Wait for both checks to complete
+        const [hasInternet, openaiResult] = await Promise.all([
+          connectivityCheck, 
+          openaiCheck
+        ]).catch(error => {
+          console.error('Error during connection checks:', error);
+          return [false, { success: false, error: error }];
         });
         
         clearTimeout(timeoutId);
         
-        if (response.ok) {
+        // If we can't even connect to the internet, that's the primary issue
+        if (!hasInternet) {
+          setStatus('Internet connection unstable. Please check your network.', true);
+          
+          document.querySelector('.vpn-warning-message').innerHTML = 
+            '<strong>Connection Error!</strong> Internet connection is unstable. Please check your network settings.';
+          
+          isVpnConnected = false;
+          document.querySelector('.vpn-warning').classList.remove('success');
+          document.querySelector('.vpn-warning').classList.add('error');
+          return false;
+        }
+        
+        // If we have internet but OpenAI API check succeeds, we're good
+        if (openaiResult.success) {
           console.log('VPN connection successful - OpenAI API accessible');
           setStatus('VPN connection successful!');
           isVpnConnected = true;
@@ -1816,29 +2011,32 @@ document.addEventListener('DOMContentLoaded', () => {
           vpnWarning.classList.add('success');
           document.querySelector('.vpn-warning-message').innerHTML = 
             '<strong>VPN Connected!</strong> You can now use the translator.';
+            
+          // Reset network error counter since we have confirmed connectivity
+          networkErrorCount = 0;
           
           return true;
         } else {
+          // If we have internet but OpenAI API fails, check specific errors
           console.log('VPN connection failed - OpenAI API returned error');
-          const errorData = await response.json();
           
           // Check for specific errors
-          if (errorData.error && errorData.error.code === 'unsupported_country_region_territory') {
+          if (openaiResult.error && openaiResult.error.code === 'unsupported_country_region_territory') {
             setStatus('VPN error: Your location is not supported. Please use VPN to connect from a supported region', true);
             document.querySelector('.vpn-warning-message').innerHTML = 
               '<strong>VPN Required!</strong> Your location is not supported. Please connect to VPN from a supported region.';
-          } else if (response.status === 401) {
+          } else if (openaiResult.status === 401) {
             setStatus('API key error: Please check your API key', true);
             document.querySelector('.vpn-warning-message').innerHTML = 
               '<strong>API Key Error!</strong> Please check your API key configuration.';
-          } else if (response.status === 429) {
+          } else if (openaiResult.status === 429) {
             setStatus('Rate limit exceeded. Please try again later.', true);
             document.querySelector('.vpn-warning-message').innerHTML = 
               '<strong>Rate Limited!</strong> OpenAI API rate limit exceeded. Please try again later.';
           } else {
             setStatus('VPN connection failed - OpenAI API returned an error', true);
             document.querySelector('.vpn-warning-message').innerHTML = 
-              `<strong>Connection Error!</strong> ${errorData.error?.message || 'Unknown API error'}`;
+              `<strong>Connection Error!</strong> ${openaiResult.error?.message || 'Unknown API error'}`;
           }
           
           isVpnConnected = false;
@@ -1852,10 +2050,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // Handle AbortController timeout
         if (fetchError.name === 'AbortError') {
           console.error('VPN check timed out');
-          setStatus('VPN connection check timed out. Please check your internet connection.', true);
+          setStatus('Connection check timed out. Your network may be too slow or unstable.', true);
         } else {
           console.error('VPN check error:', fetchError);
-          setStatus('VPN connection failed - Please ensure your VPN is active', true);
+          setStatus('Connection failed - Please check your internet and VPN', true);
         }
         
         document.querySelector('.vpn-warning-message').innerHTML = 
@@ -1868,7 +2066,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } catch (error) {
       console.error('General VPN check error:', error);
-      setStatus('Error checking VPN connection: ' + error.message, true);
+      setStatus('Error checking connection: ' + error.message, true);
       
       document.querySelector('.vpn-warning-message').innerHTML = 
         `<strong>Error!</strong> Failed to check VPN connection: ${error.message}`;
@@ -1882,7 +2080,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Add event listener for VPN check button
   checkVpnBtn.addEventListener('click', async () => {
-    await checkVpnConnection();
+    await checkNetworkConnection();
     
     if (isVpnConnected && isTranslatorActive) {
       // Restart recognition if translator is active
@@ -2035,5 +2233,168 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => {
       element.classList.remove(className);
     }, 1500); // Match animation duration from CSS
+  }
+
+  // Function to check if network connection is working
+  async function checkNetworkConnection() {
+    try {
+      setStatus('Checking VPN connection...');
+      const apiKey = getApiKey();
+      
+      // First check if basic internet is available
+      if (!navigator.onLine) {
+        console.error('Internet connection unavailable');
+        setStatus('No internet connection. Please check your network settings.', true);
+        
+        document.querySelector('.vpn-warning-message').innerHTML = 
+          '<strong>No Internet!</strong> Please check your internet connection before using the translator.';
+        
+        isVpnConnected = false;
+        document.querySelector('.vpn-warning').classList.remove('success');
+        document.querySelector('.vpn-warning').classList.add('error');
+        return false;
+      }
+      
+      // Setup request with timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000); // Increase to 15 second timeout
+      
+      try {
+        // Try both requests to detect real network issues vs region restrictions
+        
+        // First try a basic connectivity test that doesn't require VPN
+        const connectivityCheck = fetch('https://www.google.com', {
+          method: 'HEAD',
+          signal: controller.signal,
+          mode: 'no-cors' // This allows the request without CORS issues
+        }).then(response => {
+          // No-cors mode doesn't give status, but if it doesn't throw, we have connectivity
+          return true;
+        }).catch(error => {
+          console.error('Basic connectivity check failed:', error);
+          return false;
+        });
+        
+        // Then try the OpenAI API check
+        const openaiCheck = fetch('https://api.openai.com/v1/models', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`
+          },
+          signal: controller.signal
+        }).then(response => {
+          if (response.ok) {
+            return { success: true, status: response.status };
+          } else {
+            return response.json().then(errorData => {
+              return { success: false, status: response.status, error: errorData.error };
+            });
+          }
+        }).catch(error => {
+          console.error('OpenAI API check failed:', error);
+          return { success: false, error: error };
+        });
+        
+        // Wait for both checks to complete
+        const [hasInternet, openaiResult] = await Promise.all([
+          connectivityCheck, 
+          openaiCheck
+        ]).catch(error => {
+          console.error('Error during connection checks:', error);
+          return [false, { success: false, error: error }];
+        });
+        
+        clearTimeout(timeoutId);
+        
+        // If we can't even connect to the internet, that's the primary issue
+        if (!hasInternet) {
+          setStatus('Internet connection unstable. Please check your network.', true);
+          
+          document.querySelector('.vpn-warning-message').innerHTML = 
+            '<strong>Connection Error!</strong> Internet connection is unstable. Please check your network settings.';
+          
+          isVpnConnected = false;
+          document.querySelector('.vpn-warning').classList.remove('success');
+          document.querySelector('.vpn-warning').classList.add('error');
+          return false;
+        }
+        
+        // If we have internet but OpenAI API check succeeds, we're good
+        if (openaiResult.success) {
+          console.log('VPN connection successful - OpenAI API accessible');
+          setStatus('VPN connection successful!');
+          isVpnConnected = true;
+          
+          // Update VPN warning UI
+          const vpnWarning = document.querySelector('.vpn-warning');
+          vpnWarning.classList.remove('error');
+          vpnWarning.classList.add('success');
+          document.querySelector('.vpn-warning-message').innerHTML = 
+            '<strong>VPN Connected!</strong> You can now use the translator.';
+            
+          // Reset network error counter since we have confirmed connectivity
+          networkErrorCount = 0;
+          
+          return true;
+        } else {
+          // If we have internet but OpenAI API fails, check specific errors
+          console.log('VPN connection failed - OpenAI API returned error');
+          
+          // Check for specific errors
+          if (openaiResult.error && openaiResult.error.code === 'unsupported_country_region_territory') {
+            setStatus('VPN error: Your location is not supported. Please use VPN to connect from a supported region', true);
+            document.querySelector('.vpn-warning-message').innerHTML = 
+              '<strong>VPN Required!</strong> Your location is not supported. Please connect to VPN from a supported region.';
+          } else if (openaiResult.status === 401) {
+            setStatus('API key error: Please check your API key', true);
+            document.querySelector('.vpn-warning-message').innerHTML = 
+              '<strong>API Key Error!</strong> Please check your API key configuration.';
+          } else if (openaiResult.status === 429) {
+            setStatus('Rate limit exceeded. Please try again later.', true);
+            document.querySelector('.vpn-warning-message').innerHTML = 
+              '<strong>Rate Limited!</strong> OpenAI API rate limit exceeded. Please try again later.';
+          } else {
+            setStatus('VPN connection failed - OpenAI API returned an error', true);
+            document.querySelector('.vpn-warning-message').innerHTML = 
+              `<strong>Connection Error!</strong> ${openaiResult.error?.message || 'Unknown API error'}`;
+          }
+          
+          isVpnConnected = false;
+          document.querySelector('.vpn-warning').classList.remove('success');
+          document.querySelector('.vpn-warning').classList.add('error');
+          return false;
+        }
+      } catch (fetchError) {
+        clearTimeout(timeoutId);
+        
+        // Handle AbortController timeout
+        if (fetchError.name === 'AbortError') {
+          console.error('VPN check timed out');
+          setStatus('Connection check timed out. Your network may be too slow or unstable.', true);
+        } else {
+          console.error('VPN check error:', fetchError);
+          setStatus('Connection failed - Please check your internet and VPN', true);
+        }
+        
+        document.querySelector('.vpn-warning-message').innerHTML = 
+          `<strong>Connection Error!</strong> ${fetchError.message || 'Failed to connect to OpenAI API. Please check your internet and VPN.'}`;
+        
+        isVpnConnected = false;
+        document.querySelector('.vpn-warning').classList.remove('success');
+        document.querySelector('.vpn-warning').classList.add('error');
+        return false;
+      }
+    } catch (error) {
+      console.error('General VPN check error:', error);
+      setStatus('Error checking connection: ' + error.message, true);
+      
+      document.querySelector('.vpn-warning-message').innerHTML = 
+        `<strong>Error!</strong> Failed to check VPN connection: ${error.message}`;
+      
+      isVpnConnected = false;
+      document.querySelector('.vpn-warning').classList.remove('success');
+      document.querySelector('.vpn-warning').classList.add('error');
+      return false;
+    }
   }
 }); 
